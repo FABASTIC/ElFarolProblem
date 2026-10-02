@@ -185,7 +185,7 @@ export default function MetricsRail({ report, reportState, game }: MetricsRailPr
             })}
           </div>
           <p className="payoffs">
-            REPUTATION GAP (HONEST − LIARS) {fmtSigned(report.conditions.delta2?.minds?.reputation_gap_honest_minus_liars.mean, 3)} · LLM FOLLOWS INSTINCT{" "}
+            REPUTATION GAP (HONEST − LIARS) {fmtSigned(report.conditions.delta2?.minds?.reputation_gap_honest_minus_liars.mean, 3)} · ISOLATED PYTORCH TENSORS FOLLOW INSTINCT{" "}
             {fmt(report.conditions.delta2?.minds?.instinct_agreement.mean ?? report.conditions.control?.minds?.instinct_agreement.mean, 2)}
           </p>
         </section>

@@ -37,8 +37,8 @@ function hostPython(): string {
   return process.env.ELFAROL_PYTHON || (process.platform === "win32" ? "python" : "python3");
 }
 
-function llmHost(): "wsl" | "native" {
-  const chosen = process.env.ELFAROL_LLM_HOST;
+function torchHost(): "wsl" | "native" {
+  const chosen = process.env.ELFAROL_TORCH_HOST;
   if (chosen === "wsl" || chosen === "native") return chosen;
   return process.platform === "win32" ? "wsl" : "native";
 }
@@ -51,9 +51,11 @@ function wslPython(): string {
   return process.env.ELFAROL_WSL_PYTHON || "~/.venv/bin/python";
 }
 
-function llmModel(): string {
-  return process.env.ELFAROL_MODEL || "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4";
+function engineLabel(): string {
+  return "Isolated PyTorch Tensors";
 }
+
+const TORCH_PROBE = "import torch; print(torch.__version__, 'cuda' if torch.cuda.is_available() else 'cpu')";
 
 function toWslPath(target: string): string {
   const resolved = path.resolve(target);
@@ -220,20 +222,20 @@ class Launcher {
     if (!force && Date.now() - this.probedAt < 120_000) return;
     this.probedAt = Date.now();
     const python = hostPython();
-    const local = await probe(python, ["-c", "import numpy, sys; print(sys.version.split()[0])"], 20_000);
+    const local = await probe(python, ["-c", TORCH_PROBE], 20_000);
     this.capabilities.rehearsal = local.ok
-      ? { available: true, detail: `${python} ${local.output}` }
-      : { available: false, detail: `${python} cannot import numpy` };
-    if (llmHost() === "wsl") {
-      const venv = await probe("wsl.exe", ["-d", wslDistro(), "-e", "bash", "-lc", `test -x ${wslPython()} && ${wslPython()} -c "import vllm; print(vllm.__version__)"`], 90_000);
-      this.capabilities.llm = venv.ok
-        ? { available: true, detail: `WSL ${wslDistro()} · vLLM ${venv.output.split(/\s+/).pop()}` }
-        : { available: false, detail: `WSL ${wslDistro()} has no vLLM at ${wslPython()}` };
+      ? { available: true, detail: `${python} · torch ${local.output}` }
+      : { available: false, detail: `GPU ONLY · ${python} has no torch` };
+    if (torchHost() === "wsl") {
+      const venv = await probe("wsl.exe", ["-d", wslDistro(), "-e", "bash", "-lc", `test -x ${wslPython()} && ${wslPython()} -c "${TORCH_PROBE}"`], 90_000);
+      this.capabilities.llm = venv.ok && venv.output.endsWith("cuda")
+        ? { available: true, detail: `WSL ${wslDistro()} · torch ${venv.output}` }
+        : { available: false, detail: `WSL ${wslDistro()} has no CUDA torch at ${wslPython()}` };
     } else {
-      const native = await probe(python, ["-c", "import vllm; print(vllm.__version__)"], 60_000);
-      this.capabilities.llm = native.ok
-        ? { available: true, detail: `${python} · vLLM ${native.output.split(/\s+/).pop()}` }
-        : { available: false, detail: `${python} cannot import vllm` };
+      const native = await probe(python, ["-c", TORCH_PROBE], 60_000);
+      this.capabilities.llm = native.ok && native.output.endsWith("cuda")
+        ? { available: true, detail: `${python} · torch ${native.output}` }
+        : { available: false, detail: `${python} has no CUDA torch` };
     }
   }
 
@@ -279,7 +281,7 @@ class Launcher {
       archivedTo: run?.archivedTo ?? null,
       error: run?.error ?? null,
       log: this.readLog(),
-      model: llmModel(),
+      model: engineLabel(),
       dataDir: this.dataDir,
       capabilities: this.capabilities,
     };
@@ -315,8 +317,8 @@ class Launcher {
       "--stop-file",
       stopFile,
     ];
-    if (config.engine === "rehearsal") args.push("--rehearsal", "--pace", String(config.pace));
-    else args.push("--model", llmModel());
+    if (config.engine === "rehearsal") args.push("--device", "cpu", "--pace", String(config.pace));
+    else args.push("--device", "cuda");
     return args;
   }
 
@@ -351,7 +353,7 @@ class Launcher {
     } catch (error) {
       return { code: 500, body: { error: `Could not archive the previous run: ${String(error)}` } };
     }
-    const host = config.engine === "llm" ? llmHost() : "native";
+    const host = config.engine === "llm" ? torchHost() : "native";
     this.run = {
       state: "launching",
       engine: config.engine,

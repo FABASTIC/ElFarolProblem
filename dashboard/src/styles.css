@@ -1143,6 +1143,36 @@ code {
   font-size: 9px;
 }
 
+.engine[data-lock] {
+  position: relative;
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.engine__lock {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  padding: 4px 9px;
+  background: #0b0b0c;
+  color: #c9c9cc;
+  border: 1px solid #1c1c1f;
+  border-radius: 4px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  translate: -50% 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.engine[data-lock]:hover .engine__lock,
+.engine[data-lock]:focus-visible .engine__lock {
+  opacity: 1;
+}
+
 .pace {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;

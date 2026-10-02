@@ -37,7 +37,7 @@ export default function BootOverlay({ launcher, liveStatus, livePhase, onBack }:
     },
     { label: "Start experiment.py", state: published ? "done" : started ? "active" : "todo" },
     ...(engine === "llm"
-      ? [{ label: "Load Llama 3.1 into VRAM", state: (running || online ? "done" : published ? "active" : "todo") as StepState, detail: "about a minute per town" }]
+      ? [{ label: "Load Isolated PyTorch Tensors into VRAM", state: (running || online ? "done" : published ? "active" : "todo") as StepState, detail: "about a second per town" }]
       : []),
     { label: "Night 1: everyone decides", state: running ? "done" : published && (engine !== "llm" || !loading) ? "active" : "todo" },
   ];

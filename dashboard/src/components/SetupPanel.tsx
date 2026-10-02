@@ -158,9 +158,9 @@ function SeedEditor({ seeds, onChange }: { seeds: number[]; onChange: (seeds: nu
   );
 }
 
-const ENGINES: { id: Engine; title: string; sub: string }[] = [
-  { id: "llm", title: "LLM MINDS", sub: "Llama 3.1 8B via vLLM on the GPU" },
-  { id: "rehearsal", title: "REHEARSAL", sub: "Minds act on instinct alone · no GPU" },
+const ENGINES: { id: Engine; title: string; sub: string; lock?: string }[] = [
+  { id: "llm", title: "ISOLATED PYTORCH TENSORS", sub: "One brain per agent, batched on the GPU" },
+  { id: "rehearsal", title: "REHEARSAL", sub: "CPU brains · needs Torch on Windows", lock: "GPU ONLY" },
 ];
 
 export default function SetupPanel({ draft, onDraft, launcher, calibration, canClose, onClose, onBegin }: SetupPanelProps) {
@@ -184,7 +184,7 @@ export default function SetupPanel({ draft, onDraft, launcher, calibration, canC
     draft.members === RECOMMENDED.members && draft.epochs === RECOMMENDED.epochs && draft.engine === RECOMMENDED.engine && matches(PRESETS[1]);
   const command = [
     "python experiment.py",
-    draft.engine === "rehearsal" ? `--rehearsal --pace ${draft.pace}` : `--model ${launcher.status?.model ?? "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4"}`,
+    draft.engine === "rehearsal" ? `--device cpu --pace ${draft.pace}` : "--device cuda",
     `--agents ${draft.members}`,
     `--epochs ${draft.epochs}`,
     `--seeds ${draft.seeds.join(" ")}`,
@@ -276,12 +276,21 @@ export default function SetupPanel({ draft, onDraft, launcher, calibration, canC
                 type="button"
                 role="radio"
                 aria-checked={draft.engine === engine.id}
+                aria-disabled={engine.lock ? true : undefined}
+                data-lock={engine.lock}
                 className="engine"
-                onClick={() => onDraft({ ...draft, engine: engine.id })}
+                onClick={() => {
+                  if (!engine.lock) onDraft({ ...draft, engine: engine.id });
+                }}
               >
-                <span className="engine__dot" data-tone={cap?.available === false ? "fail" : cap?.available ? "good" : "idle"} aria-hidden="true" />
+                <span className="engine__dot" data-tone={engine.lock || cap?.available === false ? "fail" : cap?.available ? "good" : "idle"} aria-hidden="true" />
                 <span className="engine__title">{engine.title}</span>
                 <span className="engine__sub">{engine.sub}</span>
+                {engine.lock && (
+                  <span className="engine__lock" role="tooltip">
+                    {engine.lock}
+                  </span>
+                )}
               </button>
             );
           })}
