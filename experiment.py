@@ -1,9 +1,8 @@
 import os
-import re
 import sys
+import csv
 import json
 import math
-import zlib
 import random
 import argparse
 import time
@@ -11,23 +10,21 @@ import gc
 import signal
 import importlib
 import subprocess
-import multiprocessing
-from pathlib import Path
 
-os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "1")
-os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-
-from elfarol.simulation_runner import SimulationRunner, RunConfig, VLLMBatchPipeline
-from elfarol.simulation_runner import _build_vllm_pipeline as _legacy_build_vllm_pipeline
-
-from elfarol.minds import MindRunner, OPTIONS as _MIND_OPTIONS, OPTION_TEXT as _MIND_OPTION_TEXT
+from elfarol.simulation_runner import SimulationRunner, RunConfig, _strip_broadcasts_from_actions
+from elfarol.minds import MindRunner, MINDS_FILENAME, TRACE_FIELDS, TRACE_FILENAME, resolve_targets
+from elfarol.action import execute_brain_actions
+from elfarol.metrics_logger import (
+    COMFORT_THRESHOLD_RATIO,
+    UTILITY_AT_BAR_COMFORTABLE,
+    UTILITY_AT_BAR_OVERCROWDED,
+    UTILITY_AT_HOME,
+)
 
 try:
-    from elfarol.agent_brain import SYSTEM_PROMPT as _AGENT_SYSTEM_PROMPT
+    import torch
 except ImportError:
-    _AGENT_SYSTEM_PROMPT = None
+    torch = None
 
 EXPERIMENT_CONDITIONS = [
     {
@@ -43,82 +40,38 @@ EXPERIMENT_CONDITIONS = [
 ]
 
 MIB = 1024 * 1024
-ENGINE_PROCESS_MARKERS = ("enginecore", "vllm")
 ARMOR_DEFAULTS = {
-    "max_num_seqs": 64,
-    "max_num_batched_tokens": 2048,
-    "kv_cache_dtype": "auto",
-    "max_attempts": 3,
-    "vram_timeout_s": 180.0,
-    "vram_headroom_mib": 512.0,
-    "vram_poll_s": 0.5,
-    "utilization_floor": 0.78,
+    "max_attempts": 2,
+    "hidden": 32,
+    "memory": 256,
+    "batch_size": 16,
+    "updates": 4,
+    "target_every": 8,
+    "history": 8,
 }
 LIVE_STATE_FILENAME = "live_state.json"
 MANIFEST_FILENAME = "trial_manifest.json"
-REHEARSAL_MODEL = "rehearsal :: instinct softmax (no LLM)"
-_INSTINCT_PATTERNS = {
-    key: re.compile(re.escape(_MIND_OPTION_TEXT[key]) + r" (-?\d+(?:\.\d+)?)") for key in _MIND_OPTIONS
+BRAINS_FILENAME = "brains.pt"
+NEURAL_MODEL = "isolated torch brains :: MLP-DQN per agent"
+OPTIONS = ("honest_go", "honest_stay", "false_go", "false_stay")
+GOES = (True, False, False, True)
+CLAIMS_GO = (True, False, True, False)
+EXTRA_FEATURES = 5
+
+
+def observation_dim(history):
+    return int(history) * 2 + len(OPTIONS) + EXTRA_FEATURES
+PARAM_KEYS = ("w1", "b1", "w2", "b2", "wq", "bq", "wf", "bf")
+CHOICE_TEXT = {
+    "honest_go": "going, and saying so",
+    "honest_stay": "staying home, and saying so",
+    "false_go": "claiming I'm going, staying home",
+    "false_stay": "claiming I'm staying, going anyway",
 }
-_REHEARSAL_SPEECH = {
-    "going": (
-        "Heading to El Farol tonight.",
-        "I'll be at the bar, save me a seat.",
-        "Bar's the place tonight. See you there.",
-        "Going out tonight, it should be fine.",
-    ),
-    "staying": (
-        "Staying in tonight, it'll be packed.",
-        "Skipping the bar, too crowded for me.",
-        "Quiet night at home for me.",
-        "Not going tonight. Enjoy the crowd.",
-    ),
+SPEECH = {
+    "going": ("Heading to El Farol tonight.", "I'll be at the bar tonight.", "Going out tonight."),
+    "staying": ("Staying in tonight.", "Skipping the bar tonight.", "Quiet night at home for me."),
 }
-_REHEARSAL_NOTES = {
-    "honest_go": (
-        (
-            "Forecast {f} against a line of {t}. There is room, so I go and say so.",
-            "{f} expected, threshold {t}. Worth the trip tonight, nothing to hide.",
-            "My numbers say {f}. Under {t}, I'm going.",
-        ),
-        (
-            "Forecast {f} is over {t}, but I'm feeling lucky. Going, and I'll say so.",
-            "{f} would be a crush, yet the others usually flinch. I go openly.",
-        ),
-    ),
-    "honest_stay": (
-        (
-            "{f} should fit under {t}, but it isn't worth the risk. Staying in.",
-            "Probably fine at {f}, still not tempted. Home, and I'll say so.",
-        ),
-        (
-            "I expect {f}, past the {t} line. Staying home and saying it plainly.",
-            "{f} is too many for {t} seats of comfort. Home it is.",
-            "Not worth the crush tonight ({f} vs {t}). I'll say I'm staying.",
-        ),
-    ),
-    "false_go": (
-        (
-            "Telling them I'm going so the timid ones stay out. I'm staying home anyway.",
-            "A loud 'going' keeps the crowd guessing. Forecast {f}, I sit this one out.",
-        ),
-        (
-            "Let them think the bar is filling up. At {f} I stay in tonight.",
-            "If they hear I'm going, maybe they back off next time. Tonight, home.",
-        ),
-    ),
-    "false_stay": (
-        (
-            "Let them think I'm home. Forecast {f} under {t}, I slip in quietly.",
-            "If they believe I'm out, the bar stays roomy for me. Going.",
-        ),
-        (
-            "Saying 'staying' should thin the crowd below {t}. Then I take a seat.",
-            "{f} is a lot, so I spread the word I'm out and go anyway.",
-        ),
-    ),
-}
-_REHEARSAL_TALKATIVE = {"GAMBLER": 0.5, "COMPETITOR": 0.5, "MACHIAVELLIAN": 0.55, "HERD FOLLOWER": 0.4, "CAUTIOUS": 0.15, "SKEPTIC": 0.2}
 _NVML = {"state": None, "module": None, "handle": None}
 _SIGNALS = {"interrupted": False}
 _LOG_SINKS = []
@@ -221,104 +174,11 @@ def _round_vram(snapshot):
     return {k: (round(v, 1) if isinstance(v, float) else v) for k, v in snapshot.items()}
 
 
-def _engine_processes():
-    try:
-        children = multiprocessing.active_children()
-    except Exception:
-        return []
-    return [p for p in children if any(marker in (p.name or "").lower() for marker in ENGINE_PROCESS_MARKERS)]
-
-
-def _reap_engine_processes(timeout_s=15.0):
-    procs = _engine_processes()
-    for proc in procs:
-        try:
-            proc.terminate()
-        except Exception:
-            pass
-    deadline = time.monotonic() + timeout_s
-    for proc in procs:
-        try:
-            proc.join(max(0.0, deadline - time.monotonic()))
-        except Exception:
-            pass
-    for proc in procs:
-        try:
-            if proc.is_alive():
-                proc.kill()
-                proc.join(5.0)
-        except Exception:
-            pass
-    return len(procs)
-
-
-def _stale_engine_pids():
-    proc_root = Path("/proc")
-    if not proc_root.is_dir():
-        return []
-    own = {os.getpid()}
-    try:
-        own.update(p.pid for p in multiprocessing.active_children() if p.pid)
-    except Exception:
-        pass
-    uid = os.getuid() if hasattr(os, "getuid") else None
-    stale = []
-    for entry in proc_root.iterdir():
-        if not entry.name.isdigit() or int(entry.name) in own:
-            continue
-        try:
-            if uid is not None and entry.stat().st_uid != uid:
-                continue
-            cmdline = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "ignore")
-        except OSError:
-            continue
-        if "VLLM::" in cmdline:
-            stale.append(int(entry.name))
-    return stale
-
-
-def _vram_settled(snapshot, required_free_mib, baseline_used_mib, headroom_mib):
-    released = baseline_used_mib is not None and snapshot["used_mib"] <= baseline_used_mib + headroom_mib
-    fits = required_free_mib is not None and snapshot["free_mib"] >= required_free_mib
-    return released or fits
-
-
-def _wait_for_vram(required_free_mib, baseline_used_mib, headroom_mib, timeout_s, poll_s):
-    start = time.monotonic()
-    snapshot = _query_vram()
-    if snapshot is None:
-        return None
-    if required_free_mib is None and baseline_used_mib is None:
-        snapshot["waited_s"] = 0.0
-        snapshot["settled"] = True
-        return snapshot
-    while True:
-        settled = _vram_settled(snapshot, required_free_mib, baseline_used_mib, headroom_mib) and not _engine_processes()
-        if settled or time.monotonic() - start >= timeout_s:
-            break
-        time.sleep(poll_s)
-        snapshot = _query_vram() or snapshot
-    snapshot = dict(snapshot)
-    snapshot["waited_s"] = round(time.monotonic() - start, 2)
-    snapshot["settled"] = bool(settled)
-    return snapshot
-
-
 class _VRAMSentinel:
 
-    def __init__(self, headroom_mib, timeout_s, poll_s, utilization_floor):
-        self.headroom_mib = float(headroom_mib)
-        self.timeout_s = float(timeout_s)
-        self.poll_s = float(poll_s)
-        self.utilization_floor = float(utilization_floor)
+    def __init__(self):
         self.baseline = _query_vram()
-        self.engines_built = 0
         self.peak_used_mib = self.baseline["used_mib"] if self.baseline else None
-
-    def required_free_mib(self, utilization):
-        if not self.baseline:
-            return None
-        return self.baseline["total_mib"] * utilization + self.headroom_mib
 
     def sample(self):
         snapshot = _query_vram()
@@ -326,77 +186,28 @@ class _VRAMSentinel:
             self.peak_used_mib = snapshot["used_mib"]
         return snapshot
 
-    def drain(self, utilization):
-        baseline_used = self.baseline["used_mib"] if self.baseline else None
-        snapshot = _wait_for_vram(
-            self.required_free_mib(utilization),
-            baseline_used,
-            self.headroom_mib,
-            self.timeout_s,
-            self.poll_s,
-        )
-        if snapshot is not None and not snapshot.get("settled", True):
-            stale = _stale_engine_pids()
-            _log(
-                f"VRAM did not settle within {self.timeout_s:.0f}s :: {_format_vram(snapshot)}"
-                + (f" :: foreign vLLM processes holding the GPU: {stale} (kill -9 {' '.join(map(str, stale))})" if stale else "")
-            )
-        return snapshot
-
-    def fit_utilization(self, utilization):
-        snapshot = _query_vram()
-        if not snapshot:
-            return utilization
-        need = snapshot["total_mib"] * utilization + self.headroom_mib
-        if snapshot["free_mib"] >= need:
-            return utilization
-        fitted = math.floor((snapshot["free_mib"] - self.headroom_mib) / snapshot["total_mib"] * 100.0) / 100.0
-        if fitted >= self.utilization_floor:
-            _log(f"free VRAM below request :: {_format_vram(snapshot)} :: gpu_memory_utilization {utilization:.2f} -> {fitted:.2f}")
-            return fitted
-        _log(f"free VRAM below the {self.utilization_floor:.2f} floor :: {_format_vram(snapshot)} :: holding gpu_memory_utilization {utilization:.2f}")
-        return utilization
-
 
 def _clear_vram():
     gc.collect()
     try:
-        import torch
-        if torch.cuda.is_available() and torch.cuda.is_initialized():
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
+        import torch as _torch
+        if _torch.cuda.is_available() and _torch.cuda.is_initialized():
+            _torch.cuda.synchronize()
+            _torch.cuda.empty_cache()
+            _torch.cuda.ipc_collect()
     except (ImportError, Exception):
         pass
     gc.collect()
 
 
-def _destroy_vllm(llm):
-    engine = getattr(llm, "llm_engine", None)
-    for target in (getattr(engine, "engine_core", None), engine, llm):
-        shutdown = getattr(target, "shutdown", None)
-        if not callable(shutdown):
-            continue
-        try:
-            shutdown()
-            break
-        except Exception:
-            continue
-    for hook in ("destroy_model_parallel", "destroy_distributed_environment"):
-        try:
-            getattr(importlib.import_module("vllm.distributed.parallel_state"), hook)()
-        except (ImportError, Exception):
-            pass
-    try:
-        del llm
-    except Exception:
-        pass
-    _reap_engine_processes()
-    _clear_vram()
-
-
-def _is_vllm_engine(obj):
-    return obj is not None and type(obj).__module__.split(".")[0] == "vllm"
+def _resolve_device(device):
+    if torch is None:
+        raise EngineStartupError("PyTorch is not installed in this interpreter")
+    if device in (None, "", "auto"):
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if str(device).startswith("cuda") and not torch.cuda.is_available():
+        raise EngineStartupError(f"device {device} requested but CUDA is unavailable")
+    return str(device)
 
 
 def _build_output_dir(base_dir, condition_label, seed=None):
@@ -418,218 +229,476 @@ def _save_comparison(results, output_dir):
     return path
 
 
-def _build_vllm_pipeline(config, profile=None):
-    if not profile:
-        return _legacy_build_vllm_pipeline(config)
-    from vllm import LLM, SamplingParams
-
-    engine_kwargs = {
-        "model": config.model_name,
-        "quantization": "awq",
-        "tensor_parallel_size": config.tensor_parallel_size,
-        "gpu_memory_utilization": profile.get("gpu_memory_utilization", config.gpu_memory_utilization),
-        "max_model_len": config.max_model_len,
-        "enforce_eager": True,
-        "dtype": "half",
-        "seed": config.seed,
-        "max_num_seqs": int(profile["max_num_seqs"]),
-        "max_num_batched_tokens": int(profile["max_num_batched_tokens"]),
-    }
-    if int(profile["max_num_batched_tokens"]) < config.max_model_len:
-        engine_kwargs["enable_chunked_prefill"] = True
-    if profile.get("kv_cache_dtype") not in (None, "", "auto"):
-        engine_kwargs["kv_cache_dtype"] = profile["kv_cache_dtype"]
-    try:
-        llm = LLM(**engine_kwargs)
-    except TypeError as exc:
-        _log(f"armored engine kwargs rejected ({exc}); falling back to the stock builder")
-        return _legacy_build_vllm_pipeline(config)
-    sampling_params = SamplingParams(
-        temperature=0.7,
-        max_tokens=256,
-        top_p=0.9,
-        stop=["\n\n"],
-    )
-    return llm, sampling_params
-
-
-def _chat_messages(prompt):
-    if _AGENT_SYSTEM_PROMPT and prompt.startswith(_AGENT_SYSTEM_PROMPT):
-        body = prompt[len(_AGENT_SYSTEM_PROMPT):].lstrip("\n")
-        return [
-            {"role": "system", "content": _AGENT_SYSTEM_PROMPT},
-            {"role": "user", "content": body},
-        ]
-    return [{"role": "user", "content": prompt}]
-
-
-class _InstructChannel:
-
-    def __init__(self, llm, max_model_len, max_new_tokens, chat_template=True):
-        self.llm = llm
-        self.chat_template = chat_template
-        self.hard_limit = int(max_model_len)
-        self.target = max(1, min(self.hard_limit - 1, max(16, self.hard_limit - int(max_new_tokens or 0))))
-        self.overflow_count = 0
-        self.max_prompt_tokens = 0
-        self.prompt_count = 0
-        self.templated_count = 0
-        self.request_seeds = None
-        self._tokenizer = None
-        self._disabled = False
-
-    def _get_tokenizer(self):
-        if self._disabled:
-            return None
-        if self._tokenizer is None:
-            try:
-                self._tokenizer = self.llm.get_tokenizer()
-            except Exception:
-                self._disabled = True
-                return None
-        return self._tokenizer
-
-    def _token_ids(self, tokenizer, text, add_special_tokens):
-        try:
-            ids = tokenizer.encode(text, add_special_tokens=add_special_tokens)
-        except TypeError:
-            ids = tokenizer.encode(text)
-        ids = [int(i) for i in ids]
-        bos = getattr(tokenizer, "bos_token_id", None)
-        if not add_special_tokens and bos is not None and len(ids) > 1 and ids[0] == bos and ids[1] == bos:
-            ids = ids[1:]
-        return ids
-
-    def _encode(self, prompt):
-        tokenizer = self._get_tokenizer()
-        if tokenizer is None:
-            return None, False
-        try:
-            if self.chat_template and getattr(tokenizer, "chat_template", None):
-                text = tokenizer.apply_chat_template(_chat_messages(prompt), tokenize=False, add_generation_prompt=True)
-                return self._token_ids(tokenizer, text, False), True
-            return self._token_ids(tokenizer, prompt, True), False
-        except Exception:
-            return None, False
-
-    def generate(self, prompts, sampling_params=None, **kwargs):
-        channel = []
-        for prompt in prompts:
-            ids, templated = self._encode(prompt) if isinstance(prompt, str) else (None, False)
-            self.prompt_count += 1
-            if ids is None:
-                channel.append(prompt)
-                continue
-            self.templated_count += int(templated)
-            self.max_prompt_tokens = max(self.max_prompt_tokens, len(ids))
-            if len(ids) >= self.hard_limit:
-                self.overflow_count += 1
-                head = self.target // 2
-                ids = ids[:head] + ids[-(self.target - head):]
-            channel.append({"prompt_token_ids": ids})
-        seeds = self.request_seeds
-        self.request_seeds = None
-        if seeds is not None and len(seeds) == len(channel) and callable(getattr(sampling_params, "clone", None)):
-            per_request = []
-            for seed in seeds:
-                params = sampling_params.clone()
-                params.seed = int(seed)
-                per_request.append(params)
-            sampling_params = per_request
-        return self.llm.generate(channel, sampling_params, **kwargs)
-
-
-def _grab_number(pattern, text):
-    match = re.search(pattern, text)
-    if not match:
-        return None
-    try:
-        return float(match.group(1))
-    except (TypeError, ValueError):
-        return None
-
-
-def _rehearsal_weights(prompt):
-    line = next((row for row in prompt.splitlines() if row.startswith("Your gut instinct:")), "")
-    weights = {}
-    for key, pattern in _INSTINCT_PATTERNS.items():
-        match = pattern.search(line)
-        if match:
-            weights[key] = max(0.0, float(match.group(1)))
-    if len(weights) == len(_MIND_OPTIONS) and sum(weights.values()) > 0:
-        return weights
-    occupancy = _grab_number(r"Current bar occupancy: (\d+)", prompt)
-    threshold = _grab_number(r"Comfort threshold: (\d+)", prompt)
-    lean = 0.5 if occupancy is None or not threshold else (0.7 if occupancy <= 0.8 * threshold else 0.3)
-    return {"honest_go": 0.9 * lean, "honest_stay": 0.9 * (1.0 - lean), "false_go": 0.05, "false_stay": 0.05}
-
-
-def _rehearse(prompt, rng, fallback=None):
-    located = re.search(r"You are Agent (\d+) at \((\d+), (\d+)\)", prompt)
-    if located:
-        position = [int(located.group(2)), int(located.group(3))]
-    else:
-        position = list(fallback) if fallback is not None else [0, 0]
-    weights = _rehearsal_weights(prompt)
-    choice = rng.choices(_MIND_OPTIONS, weights=[weights[k] for k in _MIND_OPTIONS])[0]
-    stated = "going" if choice in ("honest_go", "false_go") else "staying"
-    target = "bar" if choice in ("honest_go", "false_stay") else "home"
-    forecast = _grab_number(r"Your forecast for tonight: (\d+(?:\.\d+)?) agents", prompt)
-    threshold = _grab_number(r"comfort threshold is (\d+)", prompt) or _grab_number(r"Comfort threshold: (\d+)", prompt)
-    archetype = re.search(r"Profile: ([A-Z ]+)\.", prompt)
-    talk = _REHEARSAL_TALKATIVE.get(archetype.group(1) if archetype else "", 0.3)
-    if choice in ("false_go", "false_stay"):
-        talk = max(talk, 0.8)
-    crowded = forecast is not None and threshold is not None and forecast > threshold
-    note = rng.choice(_REHEARSAL_NOTES[choice][int(crowded)]).format(
-        f=f"{forecast:.0f}" if forecast is not None else "?",
-        t=f"{threshold:.0f}" if threshold is not None else "?",
-    )
-    return {
-        "move": position,
-        "broadcast": rng.choice(_REHEARSAL_SPEECH[stated]) if rng.random() < talk else None,
-        "proximity_speech": None,
-        "stated_intention": stated,
-        "actual_target": target,
-        "private_note": note,
-    }
-
-
-class _InstinctPipeline:
-
-    def __init__(self, pace_s=0.0):
-        self.pace_s = max(0.0, float(pace_s or 0.0))
-        self.llm = self
-        self.request_seeds = None
-        self.total_generations = 0
-        self.fallback_count = 0
-        self.calls = 0
-
-    def generate_batch(self, prompts, fallback_positions=None):
-        started = time.perf_counter()
-        seeds = self.request_seeds
-        self.request_seeds = None
-        self.calls += 1
-        results = []
-        for i, prompt in enumerate(prompts):
-            if seeds is not None and i < len(seeds):
-                seed = int(seeds[i])
-            else:
-                seed = zlib.crc32(f"{self.calls}:{i}:{prompt}".encode("utf-8"))
-            fallback = fallback_positions[i] if fallback_positions is not None and i < len(fallback_positions) else None
-            results.append(_rehearse(prompt, random.Random(seed), fallback))
-            self.total_generations += 1
-        remaining = self.pace_s - (time.perf_counter() - started)
-        if remaining > 0:
-            time.sleep(remaining)
-        return results
-
-
 def _check_stop(stop_file):
     if stop_file and os.path.exists(stop_file):
         _SIGNALS["interrupted"] = True
         _log(f"stop requested via {stop_file}")
         raise KeyboardInterrupt("stop requested")
+
+
+class AgentMemory:
+
+    def __init__(self, capacity, history, device):
+        self.capacity = int(capacity)
+        self.history = int(history)
+        self.input_dim = observation_dim(self.history)
+        self.states = torch.zeros(self.capacity, self.input_dim, device=device)
+        self.next_states = torch.zeros(self.capacity, self.input_dim, device=device)
+        self.rewards = torch.zeros(self.capacity, len(OPTIONS), device=device)
+        self.attendance = torch.zeros(self.capacity, device=device)
+        self.attendance_history = torch.zeros(self.history, device=device)
+        self.reward_history = torch.zeros(self.history, device=device)
+        self.last_action = torch.zeros(len(OPTIONS), device=device)
+        self.claims_heard = 0.0
+        self.claim_reliability = 0.0
+        self.claims_made = 0
+        self.claims_true = 0
+        self.size = 0
+        self.cursor = 0
+
+    def observation(self, threshold_ratio, channel):
+        truth = (self.claims_true + 1.0) / (self.claims_made + 2.0) if channel else 0.0
+        extras = torch.tensor(
+            [threshold_ratio, self.claims_heard * channel, self.claim_reliability * channel, truth, float(channel)],
+            device=self.states.device,
+        )
+        return torch.cat([self.attendance_history, self.reward_history, self.last_action, extras])
+
+    def remember(self, attendance_fraction, reward, action_index):
+        self.attendance_history = torch.roll(self.attendance_history, 1)
+        self.attendance_history[0] = attendance_fraction
+        self.reward_history = torch.roll(self.reward_history, 1)
+        self.reward_history[0] = reward
+        self.last_action.zero_()
+        self.last_action[action_index] = 1.0
+
+    def push(self, state, rewards, next_state, attendance_fraction):
+        i = self.cursor
+        self.states[i] = state
+        self.rewards[i] = rewards
+        self.next_states[i] = next_state
+        self.attendance[i] = attendance_fraction
+        self.cursor = (self.cursor + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
+
+
+class AgentBrain:
+
+    def __init__(self, agent_id, seed, input_dim, hidden, device, output_dim=len(OPTIONS)):
+        self.agent_id = agent_id
+        self.input_dim = int(input_dim)
+        self.output_dim = int(output_dim)
+        self.hidden = int(hidden)
+        rng = random.Random(f"brain:{seed}:{agent_id}")
+        self.temperament = {
+            "honesty": round(rng.betavariate(2.2, 2.2), 3),
+            "risk_tolerance": round(rng.betavariate(2.2, 2.2), 3),
+            "learning_rate": round(10 ** rng.uniform(-3.2, -2.2), 5),
+            "impulsiveness": round(rng.uniform(0.25, 1.1), 3),
+            "exploration": round(rng.uniform(0.03, 0.15), 3),
+            "discount": round(rng.uniform(0.3, 0.8), 3),
+        }
+        generator = torch.Generator().manual_seed(rng.getrandbits(31))
+
+        def layer(fan_in, fan_out):
+            bound = math.sqrt(6.0 / (fan_in + fan_out))
+            weight = (torch.rand(fan_out, fan_in, generator=generator) * 2.0 - 1.0) * bound
+            return weight, torch.zeros(fan_out)
+
+        w1, b1 = layer(self.input_dim, self.hidden)
+        w2, b2 = layer(self.hidden, self.hidden)
+        wq, bq = layer(self.hidden, self.output_dim)
+        wf, bf = layer(self.hidden, 1)
+        lie_bias = (self.temperament["honesty"] - 0.5) * 2.0
+        go_bias = (self.temperament["risk_tolerance"] - 0.5) * 1.0
+        for k, option in enumerate(OPTIONS[: self.output_dim]):
+            if option.startswith("false"):
+                bq[k] -= lie_bias
+            if GOES[k]:
+                bq[k] += go_bias
+        self.params = {}
+        for key, value in zip(PARAM_KEYS, (w1, b1, w2, b2, wq, bq, wf, bf)):
+            self.params[key] = value.to(device).requires_grad_(True)
+        self.target = {k: v.detach().clone() for k, v in self.params.items()}
+        self.optimizer = torch.optim.Adam(list(self.params.values()), lr=self.temperament["learning_rate"])
+        self.memory = None
+        self.updates = 0
+        self.last_loss = None
+
+    def parameter_count(self):
+        return int(sum(p.numel() for p in self.params.values()))
+
+    def forward(self, x, params=None):
+        p = params or self.params
+        h = torch.relu(x @ p["w1"].T + p["b1"])
+        h = torch.relu(h @ p["w2"].T + p["b2"])
+        return h @ p["wq"].T + p["bq"], torch.sigmoid(h @ p["wf"].T + p["bf"]).squeeze(-1)
+
+    def sync_target(self):
+        with torch.no_grad():
+            for key, value in self.params.items():
+                self.target[key].copy_(value)
+
+    def state_dict(self):
+        return {k: v.detach().cpu().clone() for k, v in self.params.items()}
+
+
+class BrainColony:
+
+    def __init__(self, seed, agent_ids, num_agents, threshold, broadcast_enabled, device="cpu", hidden=None, memory=None, batch_size=None, updates=None, target_every=None, history=None):
+        self.device = torch.device(device)
+        self.num_agents = num_agents
+        self.threshold = threshold
+        self.broadcast_enabled = broadcast_enabled
+        self.hidden = int(hidden or ARMOR_DEFAULTS["hidden"])
+        self.batch_size = int(batch_size or ARMOR_DEFAULTS["batch_size"])
+        self.updates = int(updates or ARMOR_DEFAULTS["updates"])
+        self.target_every = int(target_every or ARMOR_DEFAULTS["target_every"])
+        capacity = int(memory or ARMOR_DEFAULTS["memory"])
+        self.history = int(history or ARMOR_DEFAULTS["history"])
+        self.input_dim = observation_dim(self.history)
+        self.ids = sorted(agent_ids)
+        self.index = {aid: i for i, aid in enumerate(self.ids)}
+        self.brains = []
+        for aid in self.ids:
+            brain = AgentBrain(aid, seed, self.input_dim, self.hidden, self.device)
+            brain.memory = AgentMemory(capacity, self.history, self.device)
+            self.brains.append(brain)
+        self.generator = torch.Generator(device=self.device).manual_seed(int(seed) * 7919 + 17)
+        rng = random.Random(f"speech:{seed}")
+        self.speech_rng = rng
+        n = len(self.brains)
+        temper = [b.temperament for b in self.brains]
+        self.temperature = torch.tensor([t["impulsiveness"] for t in temper], device=self.device)
+        self.exploration = torch.tensor([t["exploration"] for t in temper], device=self.device)
+        self.discount = torch.tensor([t["discount"] for t in temper], device=self.device)
+        self.threshold_ratio = threshold / max(1, num_agents)
+        self.pending = None
+        self.notes = [None] * n
+        self.archetypes = ["PRAGMATIST"] * n
+        self.moods = [("calm", 0.0)] * n
+        self.last_probs = [dict.fromkeys(OPTIONS, 0.25) for _ in range(n)]
+        self.last_forecast = [0.0] * n
+        self.forecast_error = [0.25] * n
+        self.private_lies = [0] * n
+        self.decisions = [0] * n
+        self.losses = []
+        self.trace = []
+
+    def _stack(self, target=False):
+        source = "target" if target else "params"
+        return {k: torch.stack([getattr(b, source)[k] for b in self.brains]) for k in PARAM_KEYS}
+
+    def _forward(self, p, x):
+        h = torch.relu(torch.baddbmm(p["b1"].unsqueeze(1), x, p["w1"].transpose(1, 2)))
+        h = torch.relu(torch.baddbmm(p["b2"].unsqueeze(1), h, p["w2"].transpose(1, 2)))
+        q = torch.baddbmm(p["bq"].unsqueeze(1), h, p["wq"].transpose(1, 2))
+        f = torch.sigmoid(torch.baddbmm(p["bf"].unsqueeze(1), h, p["wf"].transpose(1, 2))).squeeze(-1)
+        return q, f
+
+    def _features(self):
+        channel = 1 if self.broadcast_enabled else 0
+        return torch.stack([b.memory.observation(self.threshold_ratio, channel) for b in self.brains])
+
+    def decide(self, agents, epoch):
+        with torch.no_grad():
+            x = self._features()
+            q, f = self._forward(self._stack(), x.unsqueeze(1))
+            q = q.squeeze(1)
+            f = f.squeeze(1)
+            decay = max(0.15, 0.97 ** epoch)
+            tau = (self.temperature * decay).clamp(min=0.05).unsqueeze(1)
+            probs = torch.softmax(q / tau, dim=1)
+            eps = (self.exploration * decay).unsqueeze(1)
+            probs = (1.0 - eps) * probs + eps / len(OPTIONS)
+            choice = torch.multinomial(probs, 1, generator=self.generator).squeeze(1)
+        self.pending = {"x": x, "choice": choice.tolist(), "probs": probs.cpu().tolist(), "q": q.cpu().tolist(), "f": f.cpu().tolist()}
+        actions = []
+        for agent in agents:
+            i = self.index[agent.id]
+            option = OPTIONS[self.pending["choice"][i]]
+            stated = "going" if CLAIMS_GO[OPTIONS.index(option)] else "staying"
+            actions.append({
+                "move": [agent.x, agent.y],
+                "broadcast": self.speech_rng.choice(SPEECH[stated]) if self.broadcast_enabled else None,
+                "proximity_speech": None,
+                "stated_intention": stated,
+                "actual_target": "bar" if GOES[OPTIONS.index(option)] else "home",
+            })
+        return actions
+
+    def _train(self):
+        sizes = torch.tensor([b.memory.size for b in self.brains], device=self.device, dtype=torch.float32)
+        mask = (sizes > 0).float()
+        if mask.sum() == 0:
+            return None
+        n = len(self.brains)
+        last = None
+        for _ in range(self.updates):
+            states = torch.stack([b.memory.states for b in self.brains])
+            next_states = torch.stack([b.memory.next_states for b in self.brains])
+            rewards = torch.stack([b.memory.rewards for b in self.brains])
+            attendance = torch.stack([b.memory.attendance for b in self.brains])
+            idx = (torch.rand(n, self.batch_size, generator=self.generator, device=self.device) * sizes.clamp(min=1).unsqueeze(1)).long()
+            rows = torch.arange(n, device=self.device).unsqueeze(1)
+            s = states[rows, idx]
+            s2 = next_states[rows, idx]
+            r = rewards[rows, idx]
+            a = attendance[rows, idx]
+            online = self._stack()
+            q, f = self._forward(online, s)
+            with torch.no_grad():
+                q_next, _ = self._forward(self._stack(target=True), s2)
+                target = r + self.discount.view(n, 1, 1) * q_next.max(dim=2, keepdim=True).values
+            td = torch.nn.functional.smooth_l1_loss(q, target, reduction="none").mean(dim=(1, 2))
+            fit = torch.nn.functional.mse_loss(f, a, reduction="none").mean(dim=1)
+            per_agent = (td + 0.5 * fit) * mask
+            for brain in self.brains:
+                brain.optimizer.zero_grad(set_to_none=True)
+            per_agent.sum().backward()
+            losses = per_agent.detach().cpu().tolist()
+            for brain, active, loss in zip(self.brains, mask.tolist(), losses):
+                if not active:
+                    continue
+                torch.nn.utils.clip_grad_norm_(list(brain.params.values()), 5.0)
+                brain.optimizer.step()
+                brain.updates += 1
+                brain.last_loss = loss
+            last = losses
+        return last
+
+    def _archetype(self, probs, honesty):
+        lie = probs["false_go"] + probs["false_stay"]
+        go = probs["honest_go"] + probs["false_stay"]
+        if lie >= 0.5:
+            return "MACHIAVELLIAN"
+        if honesty > 0.72 and lie < 0.2:
+            return "STRAIGHT SHOOTER"
+        if go >= 0.65:
+            return "GAMBLER"
+        if go <= 0.35:
+            return "CAUTIOUS"
+        return "PRAGMATIST"
+
+    def observe(self, agents, actions, epoch, utilities, rerouted):
+        n_total = max(1, self.num_agents)
+        attendance = sum(1 for a in agents if a.in_bar_flag)
+        fraction = attendance / n_total
+        claimed = sum(1 for action in actions if action.get("stated_intention") == "going") / max(1, len(actions))
+        channel = 1 if self.broadcast_enabled else 0
+        pending = self.pending
+        rows = []
+        for agent, action, utility, moved in zip(agents, actions, utilities, rerouted):
+            i = self.index[agent.id]
+            brain = self.brains[i]
+            memory = brain.memory
+            in_bar = bool(agent.in_bar_flag)
+            would_be = attendance - int(in_bar) + 1
+            go_reward = UTILITY_AT_BAR_COMFORTABLE if would_be <= self.threshold else UTILITY_AT_BAR_OVERCROWDED
+            stated_go = action.get("stated_intention") == "going"
+            realised = OPTIONS.index(("honest_go" if in_bar else "false_go") if stated_go else ("false_stay" if in_bar else "honest_stay"))
+            rewards = torch.tensor([go_reward if GOES[k] else UTILITY_AT_HOME for k in range(len(OPTIONS))], device=self.device)
+            state = pending["x"][i]
+            memory.remember(fraction, float(utility), realised)
+            if channel:
+                memory.claims_heard = claimed
+                memory.claim_reliability = 0.7 * memory.claim_reliability + 0.3 * (1.0 - abs(claimed - fraction))
+                memory.claims_made += 1
+                memory.claims_true += int(stated_go == in_bar)
+            next_state = memory.observation(self.threshold_ratio, channel)
+            memory.push(state, rewards, next_state, fraction)
+            lied = stated_go != in_bar
+            self.decisions[i] += 1
+            self.private_lies[i] += int(lied)
+            probs = dict(zip(OPTIONS, pending["probs"][i]))
+            q = pending["q"][i]
+            forecast = pending["f"][i] * n_total
+            self.last_probs[i] = probs
+            self.last_forecast[i] = forecast
+            self.forecast_error[i] = 0.8 * self.forecast_error[i] + 0.2 * abs(pending["f"][i] - fraction)
+            self.archetypes[i] = self._archetype(probs, brain.temperament["honesty"])
+            surprise = min(1.0, abs(float(utility) - max(q[realised], -1.0)) / 2.0)
+            if in_bar and float(utility) < 0:
+                mood = "frustration"
+            elif in_bar:
+                mood = "pride"
+            elif go_reward > UTILITY_AT_HOME:
+                mood = "envy"
+            elif attendance > self.threshold:
+                mood = "hope"
+            else:
+                mood = "calm"
+            self.moods[i] = (mood, round(surprise, 3) if mood != "calm" else 0.0)
+            option = OPTIONS[realised]
+            self.notes[i] = (
+                f"Net forecast {forecast:.0f} vs line {self.threshold}. "
+                f"Q go {max(q[0], q[3]):+.2f} / stay {max(q[1], q[2]):+.2f}; {CHOICE_TEXT[option]}."
+            )
+            rows.append((agent, action, utility, moved, i, probs, forecast, lied, in_bar))
+        self._train_and_trace(rows, epoch)
+
+    def _train_and_trace(self, rows, epoch):
+        losses = self._train()
+        if losses is not None:
+            self.losses.append(sum(losses) / len(losses))
+        if (epoch + 1) % self.target_every == 0:
+            for brain in self.brains:
+                brain.sync_target()
+        for agent, action, utility, moved, i, probs, forecast, lied, in_bar in rows:
+            brain = self.brains[i]
+            memory = brain.memory
+            emotion, intensity = self.moods[i]
+            self.trace.append({
+                "epoch": epoch,
+                "agent_id": agent.id,
+                "archetype": self.archetypes[i],
+                "forecast": round(forecast, 2),
+                "forecast_confidence": round(max(0.0, 1.0 - 2.0 * self.forecast_error[i]), 3),
+                "active_predictor": "neural_forecaster",
+                "p_honest_go": round(probs["honest_go"], 4),
+                "p_honest_stay": round(probs["honest_stay"], 4),
+                "p_false_go": round(probs["false_go"], 4),
+                "p_false_stay": round(probs["false_stay"], 4),
+                "instinct": max(probs, key=probs.get),
+                "stated_intention": action.get("stated_intention", "staying"),
+                "actual_target": action.get("actual_target", "home"),
+                "in_bar": in_bar,
+                "lied": lied,
+                "rerouted": moved,
+                "utility": utility,
+                "top_emotion": emotion,
+                "top_emotion_intensity": intensity,
+                "trust_given_mean": round(memory.claim_reliability, 4) if self.broadcast_enabled else 0.5,
+                "reputation": round(self._reputation(i), 4),
+                "private_note": self.notes[i] or "",
+            })
+
+    def _reputation(self, i):
+        memory = self.brains[i].memory
+        if not self.broadcast_enabled:
+            return 0.5
+        return (memory.claims_true + 1.0) / (memory.claims_made + 2.0)
+
+    def live_view(self, agent_id):
+        i = self.index.get(agent_id)
+        if i is None:
+            return None
+        brain = self.brains[i]
+        emotion, intensity = self.moods[i]
+        return {
+            "archetype": self.archetypes[i],
+            "traits": brain.temperament,
+            "forecast": round(self.last_forecast[i], 1),
+            "forecast_confidence": round(max(0.0, 1.0 - 2.0 * self.forecast_error[i]), 3),
+            "predictor": "neural forecaster",
+            "instinct": {k: round(v, 3) for k, v in self.last_probs[i].items()},
+            "mood": emotion,
+            "mood_intensity": intensity,
+            "reputation": round(self._reputation(i), 3),
+            "lies": self.private_lies[i],
+            "note": self.notes[i],
+        }
+
+    def export(self):
+        out = {}
+        for i, brain in enumerate(self.brains):
+            memory = brain.memory
+            out[str(brain.agent_id)] = {
+                "archetype": self.archetypes[i],
+                "traits": brain.temperament,
+                "predictors": ["neural_forecaster"],
+                "predictor_error": {"neural_forecaster": round(self.forecast_error[i] * self.num_agents, 3)},
+                "beliefs": {k: round(v, 4) for k, v in self.last_probs[i].items()},
+                "emotions": {self.moods[i][0]: self.moods[i][1]},
+                "reputation": round(self._reputation(i), 4),
+                "public_claims": memory.claims_made,
+                "public_lies": memory.claims_made - memory.claims_true,
+                "private_lies": self.private_lies[i],
+                "decisions": self.decisions[i],
+                "least_trusted": [],
+                "most_trusted": [],
+                "last_note": self.notes[i],
+                "brain": {
+                    "hidden": self.hidden,
+                    "input_dim": brain.input_dim,
+                    "parameters": brain.parameter_count(),
+                    "updates": brain.updates,
+                    "memory_size": memory.size,
+                    "last_loss": round(brain.last_loss, 5) if brain.last_loss is not None else None,
+                },
+            }
+        return out
+
+    def state_dicts(self):
+        return {str(b.agent_id): {"temperament": b.temperament, "params": b.state_dict()} for b in self.brains}
+
+
+class NeuralRunner(SimulationRunner):
+
+    def __init__(self, config, device="cpu", pace_s=0.0, brain_options=None):
+        super().__init__(config=config, llm_pipeline=None)
+        self.device = device
+        self.pace_s = max(0.0, float(pace_s or 0.0))
+        self.brain_options = dict(brain_options or {})
+        self.population = None
+
+    def initialize(self):
+        super().initialize()
+        capacity = (self.grid.bar_max - self.grid.bar_min) ** 2
+        self.population = BrainColony(
+            self.config.seed,
+            [a.id for a in self.agent_pool.all_agents()],
+            self.config.num_agents,
+            int(COMFORT_THRESHOLD_RATIO * capacity),
+            self.config.broadcast_enabled,
+            device=self.device,
+            **self.brain_options,
+        )
+
+    def _step(self, epoch):
+        started = time.perf_counter()
+        agents = self.agent_pool.all_agents()
+        brain_actions = self.population.decide(agents, epoch)
+        if not self.config.broadcast_enabled:
+            brain_actions = _strip_broadcasts_from_actions(brain_actions)
+        brain_actions, rerouted = resolve_targets(agents, brain_actions, self.grid, random.Random(f"resolver:{self.config.seed}:{epoch}"))
+        execute_brain_actions(agents, brain_actions, self.grid, self.agent_pool, rng=self.rng)
+        snapshot = self.metrics_logger.record_epoch(epoch, agents, self.grid, brain_actions)
+        self.metrics_logger.record_fallbacks(0, len(agents))
+        if self.config.broadcast_enabled:
+            for action in brain_actions:
+                if action.get("broadcast"):
+                    self.broadcast_history.append(action["broadcast"])
+        records = {rec["agent_id"]: rec for rec in snapshot.get("agents", [])}
+        for agent in agents:
+            agent.in_bar_flag = bool(records.get(agent.id, {}).get("in_bar", self.grid.is_in_bar(agent.x, agent.y)))
+        utilities = [records.get(a.id, {}).get("utility", 0.0) for a in agents]
+        self.population.observe(agents, brain_actions, epoch, utilities, rerouted)
+        self.agent_pool.clear_messages()
+        remaining = self.pace_s - (time.perf_counter() - started)
+        if remaining > 0:
+            time.sleep(remaining)
+
+    def export_results(self):
+        summary = super().export_results()
+        with open(os.path.join(self.config.output_dir, MINDS_FILENAME), "w", encoding="utf-8") as f:
+            json.dump(self.population.export(), f, indent=2)
+        with open(os.path.join(self.config.output_dir, TRACE_FILENAME), "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=TRACE_FIELDS)
+            writer.writeheader()
+            writer.writerows(self.population.trace)
+        torch.save(self.population.state_dicts(), os.path.join(self.config.output_dir, BRAINS_FILENAME))
+        trace = self.population.trace
+        summary["agent_model"] = "neural"
+        summary["mind_lie_rate"] = round(sum(1 for row in trace if row["lied"]) / len(trace), 4) if trace else 0.0
+        summary["mind_reroute_rate"] = round(sum(1 for row in trace if row["rerouted"]) / len(trace), 4) if trace else 0.0
+        summary["brain_count"] = len(self.population.brains)
+        summary["brain_parameters"] = self.population.brains[0].parameter_count() if self.population.brains else 0
+        summary["brain_device"] = str(self.population.device)
+        summary["brain_final_loss"] = round(self.population.losses[-1], 5) if self.population.losses else None
+        with open(os.path.join(self.config.output_dir, "summary.json"), "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2)
+        return summary
 
 
 class _TelemetryMixin:
@@ -655,6 +724,13 @@ class _MindTelemetryRunner(_TelemetryMixin, MindRunner):
 
     def __init__(self, config, llm_pipeline=None, on_epoch=None):
         super().__init__(config=config, llm_pipeline=llm_pipeline)
+        self.on_epoch = on_epoch
+
+
+class _NeuralTelemetryRunner(_TelemetryMixin, NeuralRunner):
+
+    def __init__(self, config, device="cpu", pace_s=0.0, brain_options=None, on_epoch=None):
+        super().__init__(config=config, device=device, pace_s=pace_s, brain_options=brain_options)
         self.on_epoch = on_epoch
 
 
@@ -789,7 +865,7 @@ def _live_frame(runner, trial, attempt, phase):
                     "note": row["private_note"][:280],
                 })
         thoughts.sort(key=lambda t: (not t["lied"], t["agent_id"]))
-    share_history = {name: [] for name in ("honest_go", "honest_stay", "false_go", "false_stay")}
+    share_history = {name: [] for name in OPTIONS}
     for snap in snapshots:
         records = snap.get("agents", [])
         counts = [0, 0, 0, 0]
@@ -812,6 +888,12 @@ def _live_frame(runner, trial, attempt, phase):
         "broadcast_count",
         "broadcast_correlation",
     )
+    if isinstance(population, BrainColony):
+        agent_model = "neural"
+    elif population is not None:
+        agent_model = "minds"
+    else:
+        agent_model = "clone"
     return {
         "trial": trial["key"],
         "condition": trial["label"],
@@ -832,7 +914,7 @@ def _live_frame(runner, trial, attempt, phase):
         "agents": agents,
         "broadcasts": broadcasts[-24:],
         "thoughts": thoughts[:40],
-        "agent_model": "minds" if population is not None else "clone",
+        "agent_model": agent_model,
     }
 
 
@@ -852,6 +934,15 @@ def _phase_frame(trial, attempt, phase, num_epochs, grid_size):
     }
 
 
+def _vram_payload(snapshot, sentinel):
+    payload = _round_vram(snapshot) or {}
+    if sentinel is not None and sentinel.baseline:
+        payload["baseline_used_mib"] = round(sentinel.baseline["used_mib"], 1)
+    if sentinel is not None and sentinel.peak_used_mib is not None:
+        payload["peak_used_mib"] = round(sentinel.peak_used_mib, 1)
+    return payload
+
+
 def _make_epoch_hook(live, sentinel, trial, attempt, stop_file=None):
     def hook(runner, epoch):
         if runner.epoch_timings:
@@ -865,96 +956,71 @@ def _make_epoch_hook(live, sentinel, trial, attempt, stop_file=None):
     return hook
 
 
-def _vram_payload(snapshot, sentinel):
-    payload = _round_vram(snapshot) or {}
-    if sentinel is not None and sentinel.baseline:
-        payload["baseline_used_mib"] = round(sentinel.baseline["used_mib"], 1)
-    if sentinel is not None and sentinel.peak_used_mib is not None:
-        payload["peak_used_mib"] = round(sentinel.peak_used_mib, 1)
-    return payload
+def _device_ladder(device, max_attempts):
+    ladder = [device]
+    if str(device).startswith("cuda"):
+        ladder.append("cpu")
+    while len(ladder) < max_attempts:
+        ladder.append(ladder[-1])
+    return ladder[: max(1, int(max_attempts))]
 
 
-def _degrade_profile(profile, attempt):
-    scale = 2 ** (attempt - 1)
-    degraded = dict(profile)
-    degraded["max_num_seqs"] = max(8, int(profile["max_num_seqs"]) // scale)
-    degraded["max_num_batched_tokens"] = max(512, int(profile["max_num_batched_tokens"]) // scale)
-    return degraded
-
-
-def _execute_trial(config, trial, dry_run_pipeline, profile, max_attempts, sentinel, live, chat_template=True, agent_model="minds", stop_file=None):
-    attempts = 1 if dry_run_pipeline is not None else max(1, int(max_attempts))
+def _execute_trial(config, trial, dry_run_pipeline, profile, max_attempts, sentinel, live, agent_model="neural", stop_file=None):
+    if dry_run_pipeline is not None:
+        ladder = [None]
+    else:
+        ladder = _device_ladder(profile["device"], max_attempts)
     runtime = {"status": "failed", "phase": "build", "attempts": 0, "error": None}
-    for attempt in range(1, attempts + 1):
+    for attempt, device in enumerate(ladder, start=1):
         if _SIGNALS["interrupted"]:
             raise KeyboardInterrupt()
-        active = _degrade_profile(profile, attempt)
-        raw_llm = None
-        sampling_params = None
-        pipeline = None
         runner = None
-        guard = None
-        engine_spawned = False
         phase = "build"
         started = time.perf_counter()
         runtime = {"status": "failed", "phase": phase, "attempts": attempt, "error": None, "profile": None}
         live.mark(trial["key"], status="running", attempts=attempt)
         try:
+            hook = _make_epoch_hook(live, sentinel, trial, attempt, stop_file)
             if dry_run_pipeline is not None:
-                pipeline = dry_run_pipeline
+                runner_class = _TelemetryRunner if agent_model == "clone" else _MindTelemetryRunner
+                runner = runner_class(config=config, llm_pipeline=dry_run_pipeline, on_epoch=hook)
+                runner.initialize()
                 runtime["engine_build_s"] = 0.0
+                runtime["agent_model"] = "clone" if agent_model == "clone" else "minds"
             else:
-                if sentinel is not None:
-                    if sentinel.engines_built or attempt > 1:
-                        drained = sentinel.drain(active["gpu_memory_utilization"])
-                        if drained is not None:
-                            _log(f"{trial['key']} :: pre-build gate :: {_format_vram(drained)} :: waited {drained['waited_s']:.1f}s")
-                    active["gpu_memory_utilization"] = sentinel.fit_utilization(active["gpu_memory_utilization"])
                 live.current = _phase_frame(trial, attempt, "loading_engine", config.num_epochs, config.grid_size)
                 live.publish("loading_engine")
                 _log(
-                    f"{trial['key']} :: attempt {attempt}/{attempts} :: building engine :: "
-                    f"util {active['gpu_memory_utilization']:.2f} :: max_model_len {config.max_model_len} :: "
-                    f"max_num_seqs {active['max_num_seqs']} :: max_num_batched_tokens {active['max_num_batched_tokens']} :: "
-                    f"kv {active['kv_cache_dtype']}"
+                    f"{trial['key']} :: attempt {attempt}/{len(ladder)} :: building engine :: "
+                    f"{config.num_agents} isolated brains :: device {device} :: hidden {profile['hidden']} :: "
+                    f"memory {profile['memory']} :: batch {profile['batch_size']} x {profile['updates']}"
                 )
-                _clear_vram()
                 build_started = time.perf_counter()
-                raw_llm, sampling_params = _build_vllm_pipeline(config, active)
+                runner = _NeuralTelemetryRunner(
+                    config=config,
+                    device=device,
+                    pace_s=profile.get("pace", 0.0),
+                    brain_options={k: profile[k] for k in ("hidden", "memory", "batch_size", "updates", "target_every", "history")},
+                    on_epoch=hook,
+                )
+                runner.initialize()
+                if str(device).startswith("cuda"):
+                    torch.cuda.synchronize()
                 runtime["engine_build_s"] = round(time.perf_counter() - build_started, 2)
-                engine_spawned = _is_vllm_engine(raw_llm)
-                if engine_spawned:
-                    if sentinel is not None:
-                        sentinel.engines_built += 1
-                        loaded = sentinel.sample()
-                        runtime["vram_loaded_mib"] = round(loaded["used_mib"], 1) if loaded else None
-                        if loaded is not None:
-                            live.vram = _vram_payload(loaded, sentinel)
-                        _log(f"{trial['key']} :: engine online in {runtime['engine_build_s']:.1f}s :: {_format_vram(loaded)}")
-                    live.build_durations.append(runtime["engine_build_s"])
-                    guard = _InstructChannel(
-                        raw_llm,
-                        config.max_model_len,
-                        getattr(sampling_params, "max_tokens", None),
-                        chat_template=chat_template,
-                    )
-                    pipeline = VLLMBatchPipeline(guard, sampling_params)
-                else:
-                    pipeline = VLLMBatchPipeline(raw_llm, sampling_params)
-            runtime["profile"] = dict(active)
+                live.build_durations.append(runtime["engine_build_s"])
+                loaded = sentinel.sample() if sentinel is not None else None
+                runtime["vram_loaded_mib"] = round(loaded["used_mib"], 1) if loaded else None
+                if loaded is not None:
+                    live.vram = _vram_payload(loaded, sentinel)
+                _log(f"{trial['key']} :: engine online in {runtime['engine_build_s']:.1f}s :: {len(runner.population.brains)} brains x {runner.population.brains[0].parameter_count()} params :: {_format_vram(loaded)}")
+                runtime["agent_model"] = "neural"
+                runtime["device"] = str(device)
+            runtime["profile"] = dict(profile, device=str(device)) if device is not None else None
             phase = "run"
             runtime["phase"] = phase
-            runner_class = _MindTelemetryRunner if agent_model == "minds" else _TelemetryRunner
-            runner = runner_class(
-                config=config,
-                llm_pipeline=pipeline,
-                on_epoch=_make_epoch_hook(live, sentinel, trial, attempt, stop_file),
-            )
-            runner.initialize()
             runner.run()
             summary = runner.export_results()
-            summary.setdefault("agent_model", agent_model)
-            runtime["agent_model"] = agent_model
+            summary.setdefault("agent_model", runtime["agent_model"])
             runtime["status"] = "complete"
             runtime["fallback_rate"] = summary.get("regex_fallback_rate", 0.0)
             return summary, runtime
@@ -966,31 +1032,26 @@ def _execute_trial(config, trial, dry_run_pipeline, profile, max_attempts, senti
             if dry_run_pipeline is not None:
                 raise
             runtime["error"] = f"{type(exc).__name__}: {exc}"
-            _log(f"{trial['key']} :: attempt {attempt}/{attempts} failed during {phase} :: {runtime['error']}")
+            _log(f"{trial['key']} :: attempt {attempt}/{len(ladder)} failed during {phase} :: {runtime['error']}")
         finally:
             runtime["wall_time_s"] = round(time.perf_counter() - started, 2)
-            if guard is not None:
-                runtime["prompt_overflows"] = guard.overflow_count
-                runtime["max_prompt_tokens"] = guard.max_prompt_tokens
-                runtime["prompt_encoding"] = "chat_template" if guard.templated_count else "raw"
-                runtime["prompt_templated_rate"] = round(guard.templated_count / guard.prompt_count, 4) if guard.prompt_count else 0.0
             if dry_run_pipeline is None:
                 teardown_started = time.perf_counter()
-                _destroy_vllm(raw_llm)
-            raw_llm = None
-            sampling_params = None
-            guard = None
-            pipeline = None
-            runner = None
-            _clear_vram()
-            if dry_run_pipeline is None and sentinel is not None and (engine_spawned or phase == "build"):
-                released = sentinel.drain(profile["gpu_memory_utilization"])
+                if torch is not None and torch.cuda.is_available():
+                    try:
+                        runtime["torch_peak_mib"] = round(torch.cuda.max_memory_allocated() / MIB, 1)
+                        torch.cuda.reset_peak_memory_stats()
+                    except Exception:
+                        pass
+                runner = None
+                _clear_vram()
+                released = sentinel.sample() if sentinel is not None else None
                 if released is not None:
                     runtime["vram_after_teardown_mib"] = round(released["used_mib"], 1)
                     runtime["vram_release_s"] = round(time.perf_counter() - teardown_started, 2)
                     runtime["vram_peak_mib"] = round(sentinel.peak_used_mib, 1) if sentinel.peak_used_mib is not None else None
                     live.vram = _vram_payload(released, sentinel)
-                    _log(f"{trial['key']} :: teardown complete in {runtime['vram_release_s']:.1f}s :: {_format_vram(released)}")
+            runner = None
     return None, runtime
 
 
@@ -1037,6 +1098,7 @@ def _write_manifest(config, trial, runtime):
         "gpu_memory_utilization": config.gpu_memory_utilization,
         "prompt_encoding": runtime.get("prompt_encoding"),
         "agent_model": runtime.get("agent_model", "clone"),
+        "device": runtime.get("device"),
         "status": runtime.get("status"),
         "runtime": runtime,
         "written_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -1057,27 +1119,27 @@ def _annotate_summary(summary, trial, runtime):
 
 
 def run_experiment(
-    model_name="casperhansen/llama-3-8b-instruct-awq",
+    model_name=NEURAL_MODEL,
     base_output_dir="outputs/experiment",
-    num_agents=50,
+    num_agents=100,
     num_epochs=50,
     grid_size=50,
     seed=None,
     seeds=None,
-    max_model_len=2048,
-    gpu_memory_utilization=0.85,
-    tensor_parallel_size=1,
     dry_run_pipeline=None,
-    max_num_seqs=ARMOR_DEFAULTS["max_num_seqs"],
-    max_num_batched_tokens=ARMOR_DEFAULTS["max_num_batched_tokens"],
-    kv_cache_dtype=ARMOR_DEFAULTS["kv_cache_dtype"],
     max_attempts=ARMOR_DEFAULTS["max_attempts"],
-    vram_timeout_s=ARMOR_DEFAULTS["vram_timeout_s"],
     resume=False,
     live_state=True,
-    chat_template=True,
-    agent_model="minds",
+    agent_model="neural",
     stop_file=None,
+    device="auto",
+    pace=0.0,
+    hidden=ARMOR_DEFAULTS["hidden"],
+    memory=ARMOR_DEFAULTS["memory"],
+    batch_size=ARMOR_DEFAULTS["batch_size"],
+    updates=ARMOR_DEFAULTS["updates"],
+    target_every=ARMOR_DEFAULTS["target_every"],
+    history=ARMOR_DEFAULTS["history"],
 ):
     if seeds is not None:
         seeds_to_run = list(seeds)
@@ -1085,6 +1147,13 @@ def run_experiment(
         seeds_to_run = [seed]
     else:
         seeds_to_run = [42, 100, 2026]
+
+    if dry_run_pipeline is not None:
+        effective_model = "clone" if agent_model == "clone" else "minds"
+        resolved_device = None
+    else:
+        effective_model = "neural"
+        resolved_device = _resolve_device(device)
 
     all_summaries = {}
     os.makedirs(base_output_dir, exist_ok=True)
@@ -1101,19 +1170,16 @@ def run_experiment(
             })
 
     profile = {
-        "gpu_memory_utilization": gpu_memory_utilization,
-        "max_num_seqs": max_num_seqs,
-        "max_num_batched_tokens": max_num_batched_tokens,
-        "kv_cache_dtype": kv_cache_dtype,
+        "device": resolved_device,
+        "pace": float(pace or 0.0),
+        "hidden": int(hidden),
+        "memory": int(memory),
+        "batch_size": int(batch_size),
+        "updates": int(updates),
+        "target_every": int(target_every),
+        "history": int(history),
     }
-    sentinel = None
-    if dry_run_pipeline is None:
-        sentinel = _VRAMSentinel(
-            ARMOR_DEFAULTS["vram_headroom_mib"],
-            vram_timeout_s,
-            ARMOR_DEFAULTS["vram_poll_s"],
-            ARMOR_DEFAULTS["utilization_floor"],
-        )
+    sentinel = _VRAMSentinel() if resolved_device is not None and resolved_device.startswith("cuda") else None
     live = _LiveState(
         os.path.join(base_output_dir, LIVE_STATE_FILENAME),
         model_name,
@@ -1127,12 +1193,9 @@ def run_experiment(
     _LOG_SINKS.append(live.event)
 
     try:
-        if sentinel is not None:
-            _log(f"pre-flight :: {_format_vram(sentinel.baseline)} :: {len(trials)} trials x {num_epochs} epochs x {num_agents} agents")
-            stale = _stale_engine_pids()
-            if stale:
-                _log(f"pre-flight :: foreign vLLM processes detected {stale}; they must exit before an engine can claim VRAM")
-            if sentinel.baseline:
+        if resolved_device is not None:
+            _log(f"pre-flight :: {_format_vram(sentinel.baseline if sentinel else None)} :: {len(trials)} trials x {num_epochs} epochs x {num_agents} isolated brains on {resolved_device}")
+            if sentinel is not None and sentinel.baseline:
                 live.vram = _vram_payload(sentinel.baseline, sentinel)
         live.publish("booting")
 
@@ -1152,19 +1215,11 @@ def run_experiment(
                 seed=s,
                 broadcast_enabled=trial["broadcast_enabled"],
                 output_dir=output_dir,
-                max_model_len=max_model_len,
-                gpu_memory_utilization=gpu_memory_utilization,
-                tensor_parallel_size=tensor_parallel_size,
                 condition_label=label,
             )
 
             if resume:
-                cached = _load_completed_trial(
-                    output_dir,
-                    config,
-                    None if dry_run_pipeline is not None else ("chat_template" if chat_template else "raw"),
-                    agent_model,
-                )
+                cached = _load_completed_trial(output_dir, config, None, effective_model)
                 if cached is not None:
                     summary, manifest = cached
                     runtime = dict(manifest.get("runtime") or {})
@@ -1178,9 +1233,7 @@ def run_experiment(
                     continue
 
             _log(f"trial {index + 1}/{len(trials)} :: {trial_key} :: {output_dir}")
-            summary, runtime = _execute_trial(
-                config, trial, dry_run_pipeline, profile, max_attempts, sentinel, live, chat_template, agent_model, stop_file=stop_file
-            )
+            summary, runtime = _execute_trial(config, trial, dry_run_pipeline, profile, max_attempts, sentinel, live, effective_model, stop_file=stop_file)
 
             if summary is None:
                 failed = {
@@ -1195,7 +1248,7 @@ def run_experiment(
                 if runtime.get("phase") == "build":
                     live.publish("failed")
                     raise EngineStartupError(
-                        f"engine could not be started for {trial_key} after {runtime.get('attempts')} attempts: {runtime.get('error')}"
+                        f"brains could not be started for {trial_key} after {runtime.get('attempts')} attempts: {runtime.get('error')}"
                     )
                 live.publish("running")
                 continue
@@ -1217,7 +1270,7 @@ def run_experiment(
             if entry["status"] == "running":
                 entry["status"] = "interrupted"
         live.publish("interrupted")
-        _log("interrupted :: engine torn down, partial comparison saved")
+        _log("interrupted :: brains torn down, partial comparison saved")
         raise
     finally:
         if live.event in _LOG_SINKS:
@@ -1267,58 +1320,53 @@ def _restore_signals(previous):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="casperhansen/llama-3-8b-instruct-awq")
     parser.add_argument("--output-dir", type=str, default="outputs/experiment")
-    parser.add_argument("--agents", type=int, default=50)
+    parser.add_argument("--agents", type=int, default=100)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--seeds", nargs="+", type=int, default=[42, 100, 2026])
-    parser.add_argument("--max-model-len", type=int, default=None)
-    parser.add_argument("--gpu-util", type=float, default=0.85)
-    parser.add_argument("--tensor-parallel", type=int, default=1)
-    parser.add_argument("--max-num-seqs", type=int, default=ARMOR_DEFAULTS["max_num_seqs"])
-    parser.add_argument("--max-num-batched-tokens", type=int, default=ARMOR_DEFAULTS["max_num_batched_tokens"])
-    parser.add_argument("--kv-cache-dtype", type=str, default=ARMOR_DEFAULTS["kv_cache_dtype"])
+    parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument("--pace", type=float, default=0.0)
+    parser.add_argument("--hidden", type=int, default=ARMOR_DEFAULTS["hidden"])
+    parser.add_argument("--memory", type=int, default=ARMOR_DEFAULTS["memory"])
+    parser.add_argument("--batch-size", type=int, default=ARMOR_DEFAULTS["batch_size"])
+    parser.add_argument("--updates", type=int, default=ARMOR_DEFAULTS["updates"])
+    parser.add_argument("--target-every", type=int, default=ARMOR_DEFAULTS["target_every"])
+    parser.add_argument("--history", type=int, default=ARMOR_DEFAULTS["history"])
+    parser.add_argument("--model", type=str, default=None)
+    parser.add_argument("--rehearsal", action="store_true")
     parser.add_argument("--max-attempts", type=int, default=ARMOR_DEFAULTS["max_attempts"])
-    parser.add_argument("--vram-timeout", type=float, default=ARMOR_DEFAULTS["vram_timeout_s"])
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--no-live-state", action="store_true")
-    parser.add_argument("--raw-prompts", action="store_true")
-    parser.add_argument("--clone-agents", action="store_true")
-    parser.add_argument("--rehearsal", action="store_true")
-    parser.add_argument("--pace", type=float, default=0.0)
     parser.add_argument("--stop-file", type=str, default=None)
     args = parser.parse_args()
 
     active_seeds = [args.seed] if args.seed is not None else args.seeds
-    agent_model = "clone" if args.clone_agents else "minds"
-    max_model_len = args.max_model_len or (3072 if agent_model == "minds" else 2048)
-    rehearsal_pipeline = _InstinctPipeline(pace_s=args.pace) if args.rehearsal else None
 
     _SIGNALS["interrupted"] = False
     previous_handlers = _install_signal_armor()
     t0 = time.perf_counter()
     try:
+        device = _resolve_device("cpu" if args.rehearsal else args.device)
+        model_name = f"{NEURAL_MODEL} ({args.hidden}h, {observation_dim(args.history)}-d state) on {device}"
         all_summaries, comparison_path = run_experiment(
-            model_name=REHEARSAL_MODEL if args.rehearsal else args.model,
+            model_name=model_name,
             base_output_dir=args.output_dir,
             num_agents=args.agents,
             num_epochs=args.epochs,
             seeds=active_seeds,
-            max_model_len=max_model_len,
-            gpu_memory_utilization=args.gpu_util,
-            tensor_parallel_size=args.tensor_parallel,
-            max_num_seqs=args.max_num_seqs,
-            max_num_batched_tokens=args.max_num_batched_tokens,
-            kv_cache_dtype=args.kv_cache_dtype,
             max_attempts=args.max_attempts,
-            vram_timeout_s=args.vram_timeout,
             resume=args.resume,
             live_state=not args.no_live_state,
-            chat_template=not args.raw_prompts,
-            agent_model=agent_model,
-            dry_run_pipeline=rehearsal_pipeline,
             stop_file=args.stop_file,
+            device=device,
+            pace=args.pace,
+            hidden=args.hidden,
+            memory=args.memory,
+            batch_size=args.batch_size,
+            updates=args.updates,
+            target_every=args.target_every,
+            history=args.history,
         )
     except KeyboardInterrupt:
         print(f"\nSweep interrupted after {time.perf_counter() - t0:.2f}s. Partial results: {os.path.join(args.output_dir, 'comparison.json')}")
@@ -1326,7 +1374,7 @@ def main():
         sys.exit(130)
     except EngineStartupError as exc:
         print(f"\nSweep aborted: {exc}")
-        print(f"Partial results: {os.path.join(args.output_dir, 'comparison.json')}. Re-run with --resume once the GPU is clear.")
+        print(f"Partial results: {os.path.join(args.output_dir, 'comparison.json')}. Re-run with --resume once the device is clear.")
         sys.exit(1)
     finally:
         _restore_signals(previous_handlers)

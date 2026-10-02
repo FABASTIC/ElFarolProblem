@@ -12,7 +12,6 @@ from experiment import (
     _save_comparison,
     _print_summary,
     _clear_vram,
-    _destroy_vllm,
     run_experiment,
     main,
 )
@@ -83,10 +82,8 @@ class TestExperimentHelpers:
         assert "delta2" in captured
         assert "Avg Attendance" in captured
 
-    def test_clear_vram_and_destroy_vllm_no_crash(self):
+    def test_clear_vram_no_crash(self):
         _clear_vram()
-        mock_llm = MagicMock()
-        _destroy_vllm(mock_llm)
 
 
 class TestRunExperiment:
@@ -149,20 +146,16 @@ class TestRunExperiment:
 class TestExperimentCLI:
 
     def test_main_cli_execution(self, tmp_path):
+        pytest.importorskip("torch")
         test_args = [
             "experiment.py",
-            "--model", "test-model",
+            "--device", "cpu",
             "--output-dir", str(tmp_path),
             "--agents", "4",
             "--epochs", "2",
             "--seed", "99",
         ]
-        mock_vllm = MockVLLM()
-        pipeline = VLLMBatchPipeline(mock_vllm, sampling_params=None)
-
         with patch.object(sys, "argv", test_args):
-            with patch("experiment._build_vllm_pipeline", return_value=(mock_vllm, None)):
-                with patch("experiment._destroy_vllm"):
-                    main()
+            main()
 
         assert (tmp_path / "comparison.json").exists()
