@@ -56,7 +56,7 @@ function loadDraft(): LaunchConfig {
   try {
     const raw = window.localStorage.getItem(DRAFT_KEY);
     const parsed = raw ? sanitizeConfig(JSON.parse(raw)).config : null;
-    return parsed ?? { ...RECOMMENDED, seeds: [...RECOMMENDED.seeds] };
+    return parsed ? { ...parsed, engine: RECOMMENDED.engine } : { ...RECOMMENDED, seeds: [...RECOMMENDED.seeds] };
   } catch {
     return { ...RECOMMENDED, seeds: [...RECOMMENDED.seeds] };
   }
@@ -327,7 +327,7 @@ export default function App() {
             ? "failed"
             : "standby";
   const status = STATUS[statusKey] ?? { label: statusKey.toUpperCase(), tone: "idle" };
-  const model = launcherActive && launcher.status?.engine === "rehearsal" ? "rehearsal :: instinct softmax (no LLM)" : liveState?.model ?? report.data?.trials.find((t) => t.model_name)?.model_name ?? null;
+  const model = liveState?.model ?? report.data?.trials.find((t) => t.model_name)?.model_name ?? null;
 
   const calibration = useMemo(() => {
     const agents = liveState?.sweep.num_agents ?? report.data?.trials[0]?.agents ?? null;

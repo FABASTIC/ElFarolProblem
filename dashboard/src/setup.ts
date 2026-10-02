@@ -73,8 +73,8 @@ export const PRESETS: Preset[] = [
   { id: "deep", label: "DEEP STUDY", blurb: "Six paired seeds, p-floor 0.031", members: 120, epochs: 100, seeds: [42, 100, 2026, 7, 13, 99] },
 ];
 
-export const SECONDS_PER_DECISION = 0.8;
-export const ENGINE_BUILD_S = 75;
+export const SECONDS_PER_DECISION = 0.003;
+export const ENGINE_BUILD_S = 2;
 
 function asInt(value: unknown): number | null {
   const n = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
@@ -95,7 +95,7 @@ export function sanitizeConfig(input: unknown): { config: LaunchConfig | null; e
   if (epochs == null || epochs < LIMITS.epochs.min || epochs > LIMITS.epochs.max) {
     errors.push(`Nights must be a whole number from ${LIMITS.epochs.min} to ${LIMITS.epochs.max}.`);
   }
-  if (!engine) errors.push("Pick an engine: LLM or rehearsal.");
+  if (!engine) errors.push("Pick an engine: Isolated PyTorch Tensors or rehearsal.");
   if (seedList.some((s) => s == null || s < 0 || s > 2 ** 31 - 1)) errors.push("Seeds must be non-negative whole numbers.");
   const seeds = [...new Set(seedList.filter((s): s is number => s != null && s >= 0))];
   if (seeds.length < LIMITS.seeds.min || seeds.length > LIMITS.seeds.max) {
@@ -145,7 +145,7 @@ export function adviseConfig(config: LaunchConfig): SetupAdvice[] {
     advice.push({ tone: "warn", text: "With fewer than 3 paired seeds the control vs broadcast contrast cannot reach significance." });
   }
   if (config.engine === "rehearsal") {
-    advice.push({ tone: "good", text: "Rehearsal: each mind acts on its own softmax instinct. No GPU, no language model." });
+    advice.push({ tone: "warn", text: "Rehearsal runs the brains on the CPU and needs Torch on the host; this machine is GPU only." });
   }
   return advice;
 }
