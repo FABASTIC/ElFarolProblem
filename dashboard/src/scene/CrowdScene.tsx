@@ -1,6 +1,7 @@
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
+import { beamGeometry, createBeamMaterial } from "./beam";
 import { createEdgeMaterial } from "./edgeMaterial";
 import { figureGeometry, lighthouseGeometry } from "./facets";
 
@@ -24,6 +25,7 @@ const EYE = new THREE.Vector3(0, 2.3, 13);
 const LOOK = new THREE.Vector3(0, 1.0, -8);
 const TOWER = new THREE.Vector3(10.5, 0, -27);
 const TOWER_SCALE = 0.78;
+const BEACON_BEAM = beamGeometry(2.4, 26);
 
 function random(seed: number) {
   let s = seed >>> 0;
@@ -122,13 +124,15 @@ function Beacon({ reduced }: { reduced: boolean }) {
   const material = useMemo(() => createEdgeMaterial({ edge: "#77746e", face: "#0c0c0c", ink: "#d9d5cc", headInk: 0.55, width: 1.05, rim: 0.05 }), []);
   const halo = useRef<THREE.Mesh>(null);
   const beam = useRef<THREE.Group>(null);
+  const light = useMemo(() => createBeamMaterial({ color: "#ffcf7a", intensity: 0.16, falloff: 1.9, softness: 1.4 }), []);
 
   useEffect(
     () => () => {
       geometry.dispose();
       material.dispose();
+      light.dispose();
     },
-    [geometry, material],
+    [geometry, material, light],
   );
 
   useFrame(({ clock }) => {
@@ -150,10 +154,7 @@ function Beacon({ reduced }: { reduced: boolean }) {
       </mesh>
       <group ref={beam} position={[0, 7.4, 0]}>
         {[0, Math.PI].map((angle) => (
-          <mesh key={angle} rotation={[0, angle, Math.PI / 2]} position={[Math.cos(angle) * 9, 0, -Math.sin(angle) * 9]}>
-            <coneGeometry args={[1.6, 18, 4, 1, true]} />
-            <meshBasicMaterial color="#ffcf7a" transparent opacity={0.05} blending={THREE.AdditiveBlending} depthWrite={false} side={THREE.DoubleSide} toneMapped={false} />
-          </mesh>
+          <mesh key={angle} geometry={BEACON_BEAM} material={light} rotation={[0, angle, -0.08]} renderOrder={4} frustumCulled={false} />
         ))}
       </group>
     </group>

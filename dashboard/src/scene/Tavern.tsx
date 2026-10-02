@@ -1,6 +1,7 @@
 import { useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
+import { beamGeometry, createBeamMaterial } from "./beam";
 import { createEdgeMaterial } from "./edgeMaterial";
 import { cuboid, facetedGeometry, lighthouseGeometry } from "./facets";
 import { LIGHTHOUSE_OFFSET } from "./Ground";
@@ -24,7 +25,8 @@ const PALETTE: Record<CrowdState, { light: string; floor: string; beam: number; 
 
 const FLOOR_BASE = new THREE.Color("#0b0a09");
 const BULB = new THREE.OctahedronGeometry(0.07);
-const BEAM = new THREE.ConeGeometry(4.2, 40, 32, 1, true).translate(0, -20, 0).rotateZ(Math.PI / 2);
+const BEAM = beamGeometry(4.6, 36);
+const BEAM_GAIN = 2.4;
 const LIGHTHOUSE = lighthouseGeometry();
 const LANTERN = new THREE.CylinderGeometry(0.5, 0.5, 0.9, 8, 1, true);
 const LANTERN_HALO = new THREE.IcosahedronGeometry(1.5, 0);
@@ -98,14 +100,21 @@ function Lighthouse({ position, crowd, reduced }: { position: [number, number, n
   const beams = useRef<THREE.Group>(null);
   const lantern = useRef<THREE.MeshBasicMaterial>(null);
   const halo = useRef<THREE.MeshBasicMaterial>(null);
-  const beamA = useRef<THREE.MeshBasicMaterial>(null);
-  const beamB = useRef<THREE.MeshBasicMaterial>(null);
+  const beamA = useMemo(() => createBeamMaterial({ color: PALETTE.idle.light, intensity: PALETTE.idle.beam * BEAM_GAIN }), []);
+  const beamB = useMemo(() => createBeamMaterial({ color: PALETTE.idle.light, intensity: PALETTE.idle.beam * BEAM_GAIN }), []);
   const color = useMemo(() => new THREE.Color(PALETTE.idle.light), []);
   const target = useMemo(() => new THREE.Color(), []);
   const level = useRef(PALETTE.idle.beam);
   const tower = useMemo(() => createEdgeMaterial({ face: "#0c0c0c", edge: "#8f8c86", ink: "#ece9e2", headInk: 0.8, width: 1.05, rim: 0.06 }), []);
 
-  useEffect(() => () => tower.dispose(), [tower]);
+  useEffect(
+    () => () => {
+      tower.dispose();
+      beamA.dispose();
+      beamB.dispose();
+    },
+    [tower, beamA, beamB],
+  );
 
   useFrame((_, delta) => {
     const spec = PALETTE[crowd];
@@ -113,9 +122,11 @@ function Lighthouse({ position, crowd, reduced }: { position: [number, number, n
     color.lerp(target, Math.min(1, delta * 2.5));
     level.current += (spec.beam - level.current) * Math.min(1, delta * 2.5);
     if (beams.current && !reduced) beams.current.rotation.y += delta * spec.spin;
-    for (const material of [lantern.current, halo.current, beamA.current, beamB.current]) material?.color.copy(color);
-    if (beamA.current) beamA.current.opacity = level.current;
-    if (beamB.current) beamB.current.opacity = level.current;
+    for (const material of [lantern.current, halo.current]) material?.color.copy(color);
+    for (const material of [beamA, beamB]) {
+      material.uniforms.uColor.value.copy(color);
+      material.uniforms.uIntensity.value = level.current * BEAM_GAIN;
+    }
     if (halo.current) halo.current.opacity = 0.12 + level.current;
   });
 
@@ -129,12 +140,8 @@ function Lighthouse({ position, crowd, reduced }: { position: [number, number, n
         <meshBasicMaterial ref={halo} transparent opacity={0.16} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
       </mesh>
       <group ref={beams} position={[0, 7.4, 0]}>
-        <mesh geometry={BEAM} rotation={[0, 0, -0.16]}>
-          <meshBasicMaterial ref={beamA} transparent side={THREE.DoubleSide} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
-        </mesh>
-        <mesh geometry={BEAM} rotation={[0, Math.PI, -0.16]}>
-          <meshBasicMaterial ref={beamB} transparent side={THREE.DoubleSide} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
-        </mesh>
+        <mesh geometry={BEAM} material={beamA} rotation={[0, 0, -0.16]} renderOrder={4} frustumCulled={false} />
+        <mesh geometry={BEAM} material={beamB} rotation={[0, Math.PI, -0.16]} renderOrder={4} frustumCulled={false} />
       </group>
     </group>
   );

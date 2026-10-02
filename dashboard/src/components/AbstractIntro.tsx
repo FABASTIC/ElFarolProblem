@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import CrowdScene from "../scene/CrowdScene";
+import SectionDock, { type DockHandle } from "./SectionDock";
 import "../abstract.css";
 
 interface AbstractIntroProps {
@@ -142,6 +143,8 @@ export default function AbstractIntro({ leaving, onEnter }: AbstractIntroProps) 
   const [chapter, setChapter] = useState(0);
   const [barProgress, setBarProgress] = useState(0);
   const [ratio, setRatio] = useState(0);
+  const dock = useRef<DockHandle | null>(null);
+  const engine = useRef<{ goTo: (index: number) => void } | null>(null);
 
   const enter = useCallback(() => {
     if (!leaving) onEnter();
@@ -161,16 +164,22 @@ export default function AbstractIntro({ leaving, onEnter }: AbstractIntroProps) 
       const top = el.scrollTop;
       const view = el.clientHeight;
       let active = 0;
+      const progress: number[] = [];
       sections.forEach((section, i) => {
         const span = Math.max(1, section.offsetHeight - view);
         const p = Math.min(1, Math.max(0, (top - section.offsetTop) / span));
         section.style.setProperty("--p", p.toFixed(4));
+        progress.push(p);
         if (top + view * 0.5 >= section.offsetTop) active = i;
         if (section.dataset.chapter === "PROBLEM") setBarProgress(p);
         if (section.dataset.chapter === "THE NIGHT") setRatio(p);
       });
       const total = Math.max(1, el.scrollHeight - view);
       el.style.setProperty("--g", (top / total).toFixed(4));
+      const next = sections[active + 1];
+      const here = sections[active];
+      const blend = next && here ? Math.min(1, Math.max(0, (top + view * 0.5 - here.offsetTop) / Math.max(1, next.offsetTop - here.offsetTop))) : 0;
+      dock.current?.update(active + blend, progress.map((p, i) => (i < active ? 1 : i === active ? Math.max(p, blend) : 0)));
       setChapter(active);
     };
 
@@ -196,6 +205,26 @@ export default function AbstractIntro({ leaving, onEnter }: AbstractIntroProps) 
         frame = requestAnimationFrame(step);
       }
     };
+
+    const goTo = (index: number) => {
+      const section = sections[index];
+      if (!section) return;
+      const goal = Math.min(el.scrollHeight - el.clientHeight, Math.max(0, section.offsetTop));
+      if (reduced) {
+        el.scrollTop = goal;
+        target = goal;
+        current = goal;
+        measure();
+        return;
+      }
+      target = goal;
+      if (!animating) {
+        animating = true;
+        current = el.scrollTop;
+        frame = requestAnimationFrame(step);
+      }
+    };
+    engine.current = { goTo };
 
     const onScroll = () => {
       if (!animating) {
@@ -225,6 +254,7 @@ export default function AbstractIntro({ leaving, onEnter }: AbstractIntroProps) 
     el.focus({ preventScroll: true });
     return () => {
       cancelAnimationFrame(frame);
+      engine.current = null;
       reveal.disconnect();
       el.removeEventListener("wheel", onWheel);
       el.removeEventListener("scroll", onScroll);
@@ -251,7 +281,7 @@ export default function AbstractIntro({ leaving, onEnter }: AbstractIntroProps) 
             <em>⁄</em> ABSTRACT
           </span>
         </span>
-        <span className="abs__meta">ISOLATED PYTORCH TENSORS · RTX 4060</span>
+        <span className="abs__meta">ISOLATED PYTORCH TENSORS · ONE BRAIN PER AGENT</span>
         <button type="button" className="abs__skip" onClick={enter}>
           <RollText text="SKIP TO THE TOWN" className="abs__skip-long" />
           <RollText text="SKIP" className="abs__skip-short" />
@@ -261,16 +291,7 @@ export default function AbstractIntro({ leaving, onEnter }: AbstractIntroProps) 
         </button>
       </header>
 
-      <div className="abs__rail" aria-hidden="true">
-        <i />
-      </div>
-
-      <nav className="abs__pill" aria-label="Chapter">
-        <span>§ {String(chapter).padStart(2, "0")}</span>
-        <i aria-hidden="true" />
-        <strong>{CHAPTERS[chapter]}</strong>
-        <span className="abs__pill-of">/ {String(CHAPTERS.length - 1).padStart(2, "0")}</span>
-      </nav>
+      <SectionDock chapters={CHAPTERS} active={chapter} handle={dock} onGo={(index) => engine.current?.goTo(index)} />
 
       <section className="sec sec--hero" data-chapter="OPENING">
         <div className="stage">
@@ -430,7 +451,7 @@ export default function AbstractIntro({ leaving, onEnter }: AbstractIntroProps) 
               </Lines>
             </h2>
             <p className="footnote" data-reveal style={{ ["--d" as string]: "300ms" } as CSSProperties}>
-              Its own weights. Its own Adam optimizer. Its own replay memory. Nothing is pooled. On a single RTX 4060 the hundred brains are stacked into
+              Its own weights. Its own Adam optimizer. Its own replay memory. Nothing is pooled. The hundred brains are stacked into
               one batched matrix multiply, and gradients never cross from one agent to another.
             </p>
             <pre className="code" data-reveal style={{ ["--d" as string]: "450ms" } as CSSProperties}>
@@ -496,7 +517,7 @@ export default function AbstractIntro({ leaving, onEnter }: AbstractIntroProps) 
             47.3<span>s</span>
           </p>
           <p className="footnote measured__cap" data-reveal style={{ ["--d" as string]: "200ms" } as CSSProperties}>
-            Two towns × one hundred agents × fifty nights, every brain trained after every night, on one laptop GPU.
+            Two towns × one hundred agents × fifty nights, every brain trained after every night.
           </p>
           <dl className="ledger" data-reveal style={{ ["--d" as string]: "350ms" } as CSSProperties}>
             <div>

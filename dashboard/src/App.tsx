@@ -5,7 +5,11 @@ import BootOverlay from "./components/BootOverlay";
 import Boundary from "./components/Boundary";
 import Bubbles from "./components/Bubbles";
 import Deck from "./components/Deck";
-import { CrierCard, PopulationCard, RunsCard, TonightCard } from "./components/HudCards";
+import { CrierCard, PopulationCard, RunsCard, SummaryCard, TonightCard } from "./components/HudCards";
+import AuraBackground from "./components/AuraBackground";
+import Cursor from "./components/Cursor";
+import { GooDefs } from "./components/Kinetic";
+import ScrollProgress from "./components/ScrollProgress";
 import MetricsRail from "./components/MetricsRail";
 import NightTimeline from "./components/NightTimeline";
 import SetupPanel from "./components/SetupPanel";
@@ -29,6 +33,8 @@ import World from "./scene/World";
 import { createMotion } from "./scene/People";
 import type { CrowdState } from "./scene/Tavern";
 import { RECOMMENDED, sanitizeConfig, type LaunchConfig } from "./setup";
+import { plainModel } from "./format";
+import { layoutTown } from "./scene/layout";
 import { HOSTED } from "./env";
 import { usePolledJson, useReplay } from "./telemetry";
 import type { AnalyticsReport, ComparisonRow, LiveState } from "./types";
@@ -187,6 +193,8 @@ export default function App() {
   else mode = "empty";
 
   const worldFrame = mode === "setup" || mode === "boot" ? preview : frame;
+  const previousFrame = worldFrame === frame && index > 0 ? frames[index - 1] ?? null : null;
+  const placements = useMemo(() => layoutTown(worldFrame, game.gridSize, game.barMin, game.barMax), [worldFrame, game.gridSize, game.barMin, game.barMax]);
   const frameKey = mode === "setup" || mode === "boot" ? `preview:${stagedMembers}:${stagedSeed}` : `${selectedKey ?? "none"}:${frame?.epoch ?? "none"}`;
   const attendance = worldFrame && !worldFrame.preview ? worldFrame.agents.filter((a) => a.inBar).length : null;
   const crowd: CrowdState = attendance == null ? "idle" : attendance > game.threshold ? "crowded" : "comfortable";
@@ -223,6 +231,7 @@ export default function App() {
   const [speech, setSpeech] = useState(true);
   const reduced = useMemo(() => prefersReducedMotion(), []);
   const worldRef = useRef<HTMLElement>(null);
+  const leftHud = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const element = worldRef.current;
@@ -374,7 +383,7 @@ export default function App() {
             ? "failed"
             : "standby";
   const status = STATUS[statusKey] ?? { label: statusKey.toUpperCase(), tone: "idle" };
-  const model = liveState?.model ?? report.data?.trials.find((t) => t.model_name)?.model_name ?? null;
+  const model = plainModel(liveState?.model ?? report.data?.trials.find((t) => t.model_name)?.model_name ?? null);
 
   const calibration = useMemo(() => {
     const agents = liveState?.sweep.num_agents ?? report.data?.trials[0]?.agents ?? null;
@@ -389,6 +398,8 @@ export default function App() {
 
   return (
     <div className="app" data-view={view}>
+      <GooDefs />
+      <Cursor />
       <TopBar
         view={view}
         onView={setView}
@@ -414,15 +425,7 @@ export default function App() {
       {view === "world" ? (
         <main className="world" data-mode={mode} ref={worldRef}>
           <div className="world__sky" aria-hidden="true">
-            <svg className="world__rings" viewBox="-500 -500 1000 1000">
-              {[150, 250, 360, 480].map((r) => (
-                <circle key={r} r={r} />
-              ))}
-              <line x1={-1400} y1={0} x2={1400} y2={0} />
-              <line x1={0} y1={-1400} x2={0} y2={1400} strokeDasharray="2 7" />
-              <circle className="world__rings-dot" cx={-480} cy={0} r={2.5} />
-              <circle className="world__rings-dot" cx={480} cy={0} r={2.5} />
-            </svg>
+            <AuraBackground />
           </div>
           <Boundary
             resetKey={selectedKey ?? "none"}
@@ -444,6 +447,7 @@ export default function App() {
                 gridSize={game.gridSize}
                 barMin={game.barMin}
                 barMax={game.barMax}
+                placements={placements}
                 crowd={crowd}
                 fill={fill}
                 lens={lens}
@@ -463,18 +467,22 @@ export default function App() {
             </div>
           </Boundary>
           <div className="world__labels" ref={overlay} aria-hidden="true">
-            <Bubbles frame={worldFrame} selectedId={selectedId} hoveredId={hoverId} speech={speech} />
+            <Bubbles frame={worldFrame} selectedId={selectedId} hoveredId={hoverId} speech={speech} placements={placements} threshold={game.threshold} onSelect={setSelectedId} />
           </div>
           <div className="world__vignette" aria-hidden="true" />
 
-          <div className="hud hud--left">
+          <div className="hud hud--left" ref={leftHud}>
             <TonightCard frame={worldFrame} game={game} mode={mode} members={stagedMembers} />
+            {mode !== "setup" && <SummaryCard frame={worldFrame} previous={previousFrame} threshold={game.threshold} staged={mode === "boot" || mode === "empty"} />}
             {mode !== "setup" && (
               <PopulationCard frame={worldFrame} lens={lens} onLens={(next) => { setLens(next); setIsolate(null); }} isolate={isolate} onIsolate={setIsolate} staged={mode === "boot" || mode === "empty"} />
             )}
             {mode !== "setup" && (
-              <CrierCard frame={worldFrame} log={runLog} events={liveState?.events ?? []} selectedId={selectedId} onSelect={setSelectedId} />
+              <CrierCard frame={worldFrame} log={runLog} events={liveState?.events ?? []} threshold={game.threshold} selectedId={selectedId} onSelect={setSelectedId} />
             )}
+          </div>
+          <div className="hud-progress">
+            <ScrollProgress target={leftHud} watch={`${mode}:${worldFrame?.epoch ?? -1}`} />
           </div>
 
           <div className="hud hud--right">

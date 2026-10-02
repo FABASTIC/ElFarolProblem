@@ -145,7 +145,7 @@ export function adviseConfig(config: LaunchConfig): SetupAdvice[] {
     advice.push({ tone: "warn", text: "With fewer than 3 paired seeds the control vs broadcast contrast cannot reach significance." });
   }
   if (config.engine === "rehearsal") {
-    advice.push({ tone: "warn", text: "Rehearsal runs the brains on the CPU and needs Torch on the host; this machine is GPU only." });
+    advice.push({ tone: "warn", text: "Rehearsal is a slowed-down preview engine and is not available in this build." });
   }
   return advice;
 }

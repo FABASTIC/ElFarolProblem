@@ -127,8 +127,8 @@ class Launcher {
   private child: ChildProcess | null = null;
   private forceTimer: NodeJS.Timeout | null = null;
   private capabilities: Record<Engine, EngineCapability> = {
-    llm: { available: null, detail: "checking…" },
-    rehearsal: { available: null, detail: "checking…" },
+    llm: { available: null, detail: "verified when you press Begin" },
+    rehearsal: { available: null, detail: "verified when you press Begin" },
   };
   private probedAt = 0;
   private wslPulse: { pid: number; at: number; alive: boolean | null } | null = null;
@@ -216,6 +216,10 @@ class Launcher {
     const live = this.liveState();
     if (!live?.status || !RUNNING_LIVE.has(live.status)) return false;
     return typeof live.updated_at === "number" && Date.now() / 1000 - live.updated_at < STALE_AFTER_S;
+  }
+
+  unverified(engine: Engine | undefined): boolean {
+    return this.capabilities[engine ?? "llm"]?.available !== true;
   }
 
   async refreshCapabilities(force = false) {
@@ -549,7 +553,6 @@ function sameOrigin(req: Connect.IncomingMessage): boolean {
 
 export function simLauncher(options: LauncherOptions): Plugin {
   const launcher = new Launcher(options);
-  void launcher.refreshCapabilities(true);
   const handler: Connect.NextHandleFunction = (req, res) => {
     const send = (code: number, body: unknown) => {
       res.statusCode = code;
@@ -559,7 +562,6 @@ export function simLauncher(options: LauncherOptions): Plugin {
     };
     const route = (req.url ?? "/").split("?")[0];
     if (req.method === "GET" && route === "/status") {
-      void launcher.refreshCapabilities();
       send(200, launcher.status());
       return;
     }
@@ -578,6 +580,7 @@ export function simLauncher(options: LauncherOptions): Plugin {
           send(200, launcher.status());
           return;
         }
+        if (route === "/launch" && launcher.unverified((body as { engine?: Engine } | null)?.engine)) await launcher.refreshCapabilities(true);
         const result = route === "/launch" ? launcher.launch(body) : launcher.stop();
         send(result.code, result.body);
       })

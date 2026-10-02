@@ -62,3 +62,16 @@ export function tickLabel(value: number, span: number): string {
   if (span >= 0.2) return value.toFixed(2);
   return value.toFixed(3);
 }
+
+export function plainModel(label: string | null | undefined): string | null {
+  if (!label) return null;
+  const cleaned = label
+    .replace(/\s+on\s+(cuda|cpu|mps|gpu)(:\d+)?\s*$/i, "")
+    .replace(/\b(rtx\s*\d{3,4}|wsl2?|ubuntu[-\s]?[\d.]*|cuda(:\d+)?|vram)\b/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s*::\s*/g, " · ")
+    .replace(/\btorch\b/gi, "PyTorch")
+    .trim();
+  if (!cleaned) return null;
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}

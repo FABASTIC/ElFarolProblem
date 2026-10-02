@@ -1,8 +1,10 @@
 import { useMemo } from "react";
 import { fmt, fmtSigned, isNum } from "../format";
 import { STRATEGIES, STRATEGY_COLOR, STRATEGY_LABEL, STRATEGY_STORY, type AgentState, type Frame } from "../model";
+import { narrate } from "../narrative";
 import { ARCHETYPE_BLURB, ARCHETYPE_COLOR, TRAIT_LABEL, handleOf, nameOf } from "../people";
 import type { StrategyKey } from "../types";
+import { Subfold } from "./Fold";
 
 interface AgentCardProps {
   agent: AgentState;
@@ -74,6 +76,9 @@ export default function AgentCard({ agent, frames, index, threshold, members, on
     return out;
   }, [frames, index, agent.id]);
 
+  const tonight = frames[index];
+  const crowded = tonight ? tonight.agents.filter((a) => a.inBar).length > threshold : null;
+  const story = narrate(agent, threshold, crowded);
   const mind = agent.mind ?? null;
   const lied = agent.strategy === "false_go" || agent.strategy === "false_stay";
   const instinct = mind ? STRATEGIES.map((s) => ({ key: s, p: mind.instinct[s] ?? 0 })) : [];
@@ -92,9 +97,7 @@ export default function AgentCard({ agent, frames, index, threshold, members, on
         </span>
         <div className="agent__id">
           <h2>{nameOf(agent.id)}</h2>
-          <p>
-            {handleOf(agent.id)} · cell ({agent.x}, {agent.y})
-          </p>
+          <p>{handleOf(agent.id)}</p>
         </div>
         <button type="button" className="btn btn--ghost" onClick={onClose} aria-label="Close inspector">
           ✕
@@ -108,6 +111,13 @@ export default function AgentCard({ agent, frames, index, threshold, members, on
           <span>{ARCHETYPE_BLURB[mind.archetype] ?? ""}</span>
         </p>
       )}
+
+      <div className="agent__plain" data-lie={story.lied}>
+        <p className="eyebrow">IN PLAIN WORDS</p>
+        <p className="agent__plain-line">“{story.headline}”</p>
+        {story.context && <p className="agent__plain-ctx">{story.context}</p>}
+        {story.outcome && <p className="agent__plain-out">{story.outcome}</p>}
+      </div>
 
       <div className="agent__tonight" data-lie={lied}>
         <span className="agent__chip" style={{ borderColor: STRATEGY_COLOR[agent.strategy] }}>
@@ -137,21 +147,24 @@ export default function AgentCard({ agent, frames, index, threshold, members, on
         </dl>
       </div>
 
-      {mind?.note && (
-        <blockquote className="agent__thought" data-lie={lied}>
-          <span>{lied ? "PRIVATE THOUGHT · WHILE LYING" : "PRIVATE THOUGHT"}</span>“{mind.note}”
-        </blockquote>
-      )}
-      {agent.broadcast && (
-        <blockquote className="agent__said">
-          <span>SAID TO EVERYONE</span>“{agent.broadcast}”
-        </blockquote>
+      {(mind?.note || agent.broadcast) && (
+        <Subfold id="agent.raw" title="RAW SIGNALS" meta={agent.broadcast ? "SAID + THOUGHT" : "THOUGHT"}>
+          {mind?.note && (
+            <blockquote className="agent__thought" data-lie={lied}>
+              <span>{lied ? "PRIVATE NOTE · WHILE LYING" : "PRIVATE NOTE"}</span>“{mind.note}”
+            </blockquote>
+          )}
+          {agent.broadcast && (
+            <blockquote className="agent__said">
+              <span>SAID TO EVERYONE</span>“{agent.broadcast}”
+            </blockquote>
+          )}
+        </Subfold>
       )}
 
       {mind ? (
         <>
-          <div className="agent__section">
-            <p className="eyebrow">FORECAST</p>
+          <Subfold id="agent.forecast" title="FORECAST" meta={isNum(mind.forecast) ? `${fmt(mind.forecast, 0)} / ${threshold}` : "—"} defaultOpen>
             <div className="forecast">
               <div className="forecast__track" aria-hidden="true">
                 <span className="forecast__line" style={{ left: `${(threshold / scale) * 100}%` }} />
@@ -168,13 +181,13 @@ export default function AgentCard({ agent, frames, index, threshold, members, on
                 {mind.predictor ? ` · method: ${mind.predictor}` : ""} · confidence {fmt(mind.forecastConfidence, 2)}
               </p>
             </div>
-          </div>
+          </Subfold>
 
-          <div className="agent__section">
-            <p className="eyebrow">
-              GUT INSTINCT{" "}
-              {followed != null && <span className="agent__badge" data-tone={followed ? "good" : "warn"}>{followed ? "✓ FOLLOWED IT" : "! OVERRODE IT"}</span>}
-            </p>
+          <Subfold
+            id="agent.instinct"
+            title="GUT INSTINCT"
+            meta={followed != null ? <span className="agent__badge" data-tone={followed ? "good" : "warn"}>{followed ? "✓ FOLLOWED" : "! OVERRODE"}</span> : null}
+          >
             {instinct.map((item) => (
               <div key={item.key} className="instinct" data-chosen={item.key === agent.strategy}>
                 <span className="instinct__label">{STRATEGY_LABEL[item.key]}</span>
@@ -184,41 +197,39 @@ export default function AgentCard({ agent, frames, index, threshold, members, on
                 <span className="instinct__value">{(item.p * 100).toFixed(0)}%</span>
               </div>
             ))}
-          </div>
+          </Subfold>
 
-          <div className="agent__section agent__pair">
-            <div>
-              <p className="eyebrow">MOOD</p>
-              <p className="agent__mood">
-                {mind.mood.toUpperCase()}
-                {mind.mood !== "calm" && <small> {fmt(mind.moodIntensity, 2)}</small>}
-              </p>
+          <Subfold id="agent.temper" title="MOOD & TEMPERAMENT" meta={mind.mood.toUpperCase()}>
+            <div className="agent__pair">
+              <div>
+                <p className="eyebrow">MOOD</p>
+                <p className="agent__mood">
+                  {mind.mood.toUpperCase()}
+                  {mind.mood !== "calm" && <small> {fmt(mind.moodIntensity, 2)}</small>}
+                </p>
+              </div>
+              <div>
+                <p className="eyebrow">REPUTATION</p>
+                <Meter value={mind.reputation} label="" />
+              </div>
             </div>
-            <div>
-              <p className="eyebrow">REPUTATION</p>
-              <Meter value={mind.reputation} label="" />
-            </div>
-          </div>
-
-          {mind.traits && (
-            <div className="agent__section">
-              <p className="eyebrow">TEMPERAMENT</p>
+            {mind.traits && (
               <div className="traits">
                 {Object.entries(TRAIT_LABEL).map(([key, label]) => (
                   <Meter key={key} label={label} value={mind.traits?.[key] ?? null} />
                 ))}
               </div>
-            </div>
-          )}
+            )}
+          </Subfold>
         </>
       ) : (
-        <p className="empty">No mind trace for this person (clone agents or trace not on disk).</p>
+        <p className="empty">No mind trace for this person.</p>
       )}
 
-      <div className="agent__section">
-        <p className="eyebrow">NIGHTS · TOP ROW AT THE BAR, BOTTOM AT HOME · LINE = RUNNING UTILITY</p>
+      <Subfold id="agent.history" title="NIGHTS" meta={`${visits} AT THE BAR`} defaultOpen>
+        <p className="hud-hint">Top row at the bar, bottom at home. The line is running utility.</p>
         <History steps={steps} current={frames[index]?.epoch ?? -1} />
-      </div>
+      </Subfold>
     </section>
   );
 }

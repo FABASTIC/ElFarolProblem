@@ -1,4 +1,7 @@
 import { useEffect, useState } from "react";
+import DitheredLogo from "./DitheredLogo";
+import { Segmented } from "./Kinetic";
+import SplitFlap, { FLAP_DIGITS } from "./SplitFlap";
 import { fmtDuration } from "../format";
 import { conditionColor, conditionLabel, type TrialEntry } from "../model";
 import type { FeedState } from "../telemetry";
@@ -58,16 +61,21 @@ function feedTone(feed: FeedHealth, now: number): string {
   return age < 30 ? "good" : "warn";
 }
 
+const LOGO = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><defs><linearGradient id="t" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ece9e2"/><stop offset="1" stop-color="#ece9e2" stop-opacity="0.42"/></linearGradient><linearGradient id="b" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ffcf7a"/><stop offset="1" stop-color="#ffcf7a" stop-opacity="0"/></linearGradient></defs><path d="M15.6 36 L17.4 16.5 H22.6 L24.4 36 Z" fill="url(#t)"/><rect x="15" y="14.4" width="10" height="2.1" fill="#ece9e2"/><rect x="16.8" y="9.4" width="6.4" height="5" fill="#ffcf7a"/><path d="M16.2 9.4 L20 5 L23.8 9.4 Z" fill="#ece9e2"/><path d="M23.2 10.4 L39.5 5 L39.5 19 Z" fill="url(#b)"/><path d="M16.8 11.8 L0.5 6.4 L0.5 19.4 Z" fill="url(#b)" transform="translate(17.3 0) scale(-1 1) translate(-17.3 0)" opacity="0.6"/><rect x="8" y="36" width="24" height="2.4" fill="#ece9e2"/></svg>`;
+
+const TONE_COLOR: Record<string, string> = {
+  good: "#0ca30c",
+  live: "#5fd35f",
+  warn: "#fab219",
+  fail: "#d03b3b",
+  idle: "#85827c",
+};
+
 function Mark() {
   return (
-    <svg className="topbar__mark" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="var(--text)" strokeWidth="1">
-      <rect x="0.5" y="0.5" width="23" height="23" stroke="var(--hairline-strong)" />
-      <path d="M9.4 20.5 L10.4 9.5 H13.6 L14.6 20.5 Z" />
-      <path d="M9.8 5.4 L12 3.2 L14.2 5.4" />
-      <rect x="10.2" y="5.6" width="3.6" height="3.2" fill="var(--lamp)" stroke="none" />
-      <path d="M14.4 6.4 L21 4.6 M14.4 8 L21 9.8" stroke="var(--lamp)" opacity="0.7" />
-      <path d="M5 20.5 H19" />
-    </svg>
+    <span className="topbar__mark">
+      <DitheredLogo svg={LOGO} size={38} grid={34} threshold={96} />
+    </span>
   );
 }
 
@@ -115,7 +123,9 @@ export default function TopBar({
       <div className="topbar__clock" aria-live="polite">
         <div className="topbar__night">
           <span>NIGHT</span>
-          <strong>{night ?? "—"}</strong>
+          <strong>
+            <SplitFlap text={night != null ? String(night).padStart(2, "0") : "--"} charset={night != null ? FLAP_DIGITS : " -"} size="md" align="right" columns={Math.max(2, String(nights ?? 0).length)} label={night != null ? `Night ${night}` : "No night"} />
+          </strong>
           <em>/ {nights ?? "—"}</em>
         </div>
         <div className="topbar__track" aria-hidden="true">
@@ -136,25 +146,32 @@ export default function TopBar({
 
       <div className="topbar__right">
         <button type="button" className="btn btn--tiny topbar__abstract" onClick={onAbstract}>
+          <span className="topbar__abstract-glyph" aria-hidden="true">
+            §
+          </span>
           ABSTRACT
         </button>
-        <div className="segmented topbar__views" role="tablist" aria-label="View">
-          <button type="button" role="tab" className="btn btn--seg" aria-selected={view === "world"} aria-pressed={view === "world"} onClick={() => onView("world")}>
-            WORLD
-          </button>
-          <button type="button" role="tab" className="btn btn--seg" aria-selected={view === "lab"} aria-pressed={view === "lab"} onClick={() => onView("lab")}>
-            LAB
-          </button>
-        </div>
+        <Segmented
+          kind="tab"
+          label="View"
+          className="topbar__views"
+          value={view}
+          onChange={onView}
+          options={[
+            { id: "world", label: "WORLD" },
+            { id: "lab", label: "LAB" },
+          ]}
+        />
         <div className="topbar__status">
-          <span className="pill" data-tone={statusTone}>
-            <span className="pill__dot" aria-hidden="true" />
-            {statusLabel}
+          <span className="pill pill--flap" data-tone={statusTone}>
+            <SplitFlap text={statusLabel} size="sm" showIndicators accentColor={TONE_COLOR[statusTone] ?? TONE_COLOR.idle} label={statusLabel} />
           </span>
-          <span className="topbar__times">
-            {fmtDuration(elapsed)}
-            {eta != null && <small> · ETA {fmtDuration(eta)}</small>}
-          </span>
+          {elapsed != null && (
+            <span className="topbar__times">
+              {fmtDuration(elapsed)}
+              {eta != null && <small> · ETA {fmtDuration(eta)}</small>}
+            </span>
+          )}
         </div>
         {canStop ? (
           <button

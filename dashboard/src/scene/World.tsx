@@ -5,6 +5,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { Frame } from "../model";
 import type { Lens } from "../people";
 import Ground, { BORDER } from "./Ground";
+import type { Placements } from "./layout";
 import People, { type Motion } from "./People";
 import Tavern, { type CrowdState } from "./Tavern";
 
@@ -14,6 +15,7 @@ interface WorldProps {
   gridSize: number;
   barMin: number;
   barMax: number;
+  placements: Placements;
   crowd: CrowdState;
   fill: number;
   lens: Lens;
@@ -198,29 +200,161 @@ function Rig({ extent, resetToken, drift, reduced, selectedId, motion }: RigProp
   return null;
 }
 
+interface Callout {
+  x: number;
+  y: number;
+  side: -1 | 1;
+  frame: number;
+}
+
+interface Bounds {
+  at: number;
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+const GAP = 10;
+const EDGE = 22;
+
+function hudEdge(selector: string, base: DOMRect): DOMRect | null {
+  const element = document.querySelector<HTMLElement>(selector);
+  if (!element || getComputedStyle(element).position !== "absolute") return null;
+  const rect = element.getBoundingClientRect();
+  if (!rect.width || !rect.height || rect.bottom < base.top || rect.top > base.bottom) return null;
+  return rect;
+}
+
 function Projector({ overlay, motion }: { overlay: RefObject<HTMLDivElement | null>; motion: MutableRefObject<Motion> }) {
   const camera = useThree((state) => state.camera);
   const width = useThree((state) => state.size.width);
   const height = useThree((state) => state.size.height);
   const point = useMemo(() => new THREE.Vector3(), []);
+  const callouts = useRef(new Map<number, Callout>());
+  const bounds = useRef<Bounds>({ at: -1, left: EDGE, right: 0, top: EDGE, bottom: 0 });
+  const tick = useRef(0);
 
-  useFrame(() => {
+  useFrame((_, delta) => {
     const root = overlay.current;
     if (!root) return;
     const m = motion.current;
+    const now = performance.now();
+    tick.current += 1;
+    if (now - bounds.current.at > 400 || bounds.current.right === 0) {
+      const base = root.getBoundingClientRect();
+      const left = hudEdge(".hud--left", base);
+      const right = hudEdge(".hud--right", base);
+      const bottom = hudEdge(".hud--bottom", base);
+      const tools = hudEdge(".world__tools", base);
+      const floor = Math.min(bottom ? bottom.top - base.top : height, tools ? tools.top - base.top : height);
+      bounds.current = {
+        at: now,
+        left: left ? left.right - base.left + EDGE : EDGE,
+        right: right ? right.left - base.left - EDGE : width - EDGE,
+        top: EDGE + 8,
+        bottom: floor - EDGE,
+      };
+    }
+    camera.updateMatrixWorld();
+    const area = bounds.current;
+    const ease = 1 - Math.exp(-Math.min(delta, 0.1) * 9);
+    const project = (index: number, lift: number) => {
+      point.set(m.positions[index * 3], m.positions[index * 3 + 1] + lift, m.positions[index * 3 + 2]).project(camera);
+      return { x: ((point.x + 1) / 2) * width, y: ((1 - point.y) / 2) * height };
+    };
+
+    const columns: Record<string, { element: HTMLElement; id: number; slot: number; ax: number; ay: number; w: number; h: number; state: Callout; target: number }[]> = { "-1": [], "1": [] };
+    const single = area.right - area.left < 224 * 2 + 160;
+    const middle = single ? Infinity : (area.left + area.right) / 2;
+
     root.querySelectorAll<HTMLElement>("[data-agent]").forEach((element) => {
-      const index = m.indexById.get(Number(element.dataset.agent));
+      const id = Number(element.dataset.agent);
+      const index = m.indexById.get(id);
       if (index == null) {
         element.style.visibility = "hidden";
         return;
       }
-      const lift = Number(element.dataset.lift ?? "1.25");
-      point.set(m.positions[index * 3], m.positions[index * 3 + 1] + lift, m.positions[index * 3 + 2]).project(camera);
-      const x = ((point.x + 1) / 2) * width;
-      const y = ((1 - point.y) / 2) * height;
-      element.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
-      element.style.visibility = "visible";
+      const anchor = project(index, Number(element.dataset.lift ?? "1.25"));
+      if (!element.dataset.callout) {
+        element.style.transform = `translate3d(${anchor.x.toFixed(1)}px, ${anchor.y.toFixed(1)}px, 0)`;
+        element.style.visibility = "visible";
+        return;
+      }
+      const body = element.firstElementChild as HTMLElement | null;
+      const w = body?.offsetWidth ?? 220;
+      const h = body?.offsetHeight ?? 56;
+      const offscreen = anchor.x < area.left - 60 || anchor.x > area.right + 60 || anchor.y < -40 || anchor.y > height + 40;
+      if (offscreen) {
+        element.style.visibility = "hidden";
+        element.dataset.off = "true";
+        return;
+      }
+      element.dataset.off = "false";
+      let state = callouts.current.get(id);
+      if (!state) {
+        const side: -1 | 1 = anchor.x < middle ? -1 : 1;
+        state = { x: side < 0 ? area.left : area.right - w, y: anchor.y - h / 2, side, frame: tick.current };
+        callouts.current.set(id, state);
+      } else if (single) state.side = -1;
+      else if (state.side === -1 && anchor.x > middle + 80) state.side = 1;
+      else if (state.side === 1 && anchor.x < middle - 80) state.side = -1;
+      state.frame = tick.current;
+      columns[String(state.side)].push({ element, id, slot: Number(element.dataset.slot ?? id), ax: anchor.x, ay: anchor.y, w, h, state, target: anchor.y - h / 2 });
     });
+
+    for (const key of ["-1", "1"]) {
+      const limit = 3;
+      const keep = new Set(columns[key].slice().sort((a, b) => a.slot - b.slot).slice(0, limit).map((item) => item.id));
+      for (const item of columns[key]) {
+        if (keep.has(item.id)) continue;
+        item.element.style.visibility = "hidden";
+        item.state.frame = -1;
+      }
+      const list = columns[key].filter((item) => keep.has(item.id)).sort((a, b) => a.ay - b.ay || a.id - b.id);
+      for (let i = 0; i < list.length; i += 1) {
+        const item = list[i];
+        const floor = i ? list[i - 1].target + list[i - 1].h + GAP : area.top;
+        item.target = Math.max(floor, Math.min(area.bottom - item.h, item.target));
+      }
+      for (let i = list.length - 1; i >= 0; i -= 1) {
+        const item = list[i];
+        const ceiling = i < list.length - 1 ? list[i + 1].target - GAP - item.h : area.bottom - item.h;
+        item.target = Math.max(area.top, Math.min(item.target, ceiling));
+      }
+      for (const item of list) {
+        const goalX = item.state.side < 0 ? area.left : area.right - item.w;
+        item.state.x += (goalX - item.state.x) * ease;
+        item.state.y += (item.target - item.state.y) * ease;
+        item.element.style.transform = `translate3d(${item.state.x.toFixed(1)}px, ${item.state.y.toFixed(1)}px, 0)`;
+        item.element.style.visibility = "visible";
+        const leader = root.querySelector<SVGGElement>(`[data-leader="${item.id}"]`);
+        if (leader) {
+          const ex = item.state.side < 0 ? item.state.x + item.w : item.state.x;
+          const ey = item.state.y + item.h / 2;
+          const out = item.state.side < 0 ? 1 : -1;
+          const reach = Math.max(40, Math.abs(item.ax - ex) * 0.45);
+          const d = `M${ex.toFixed(1)} ${ey.toFixed(1)} C${(ex + out * reach).toFixed(1)} ${ey.toFixed(1)} ${(item.ax - out * reach * 0.5).toFixed(1)} ${(item.ay - 20).toFixed(1)} ${item.ax.toFixed(1)} ${(item.ay - 7).toFixed(1)}`;
+          leader.querySelectorAll("path").forEach((path) => path.setAttribute("d", d));
+          const label = leader.querySelector("text");
+          label?.setAttribute("x", (item.ax + 10).toFixed(1));
+          label?.setAttribute("y", (item.ay - 10).toFixed(1));
+          leader.querySelectorAll("circle").forEach((dot) => {
+            dot.setAttribute("cx", item.ax.toFixed(1));
+            dot.setAttribute("cy", item.ay.toFixed(1));
+          });
+          leader.style.visibility = "visible";
+        }
+      }
+    }
+
+    root.querySelectorAll<SVGGElement>("[data-leader]").forEach((leader) => {
+      const state = callouts.current.get(Number(leader.dataset.leader));
+      if (!state || state.frame !== tick.current) leader.style.visibility = "hidden";
+    });
+    for (const [id, state] of callouts.current) {
+      if (tick.current - state.frame > 120) callouts.current.delete(id);
+    }
   });
 
   return null;
@@ -232,6 +366,7 @@ export default function World({
   gridSize,
   barMin,
   barMax,
+  placements,
   crowd,
   fill,
   lens,
@@ -263,6 +398,7 @@ export default function World({
         frame={frame}
         frameKey={frameKey}
         gridSize={gridSize}
+        placements={placements}
         lens={lens}
         isolate={isolate}
         wealthSpan={wealthSpan}

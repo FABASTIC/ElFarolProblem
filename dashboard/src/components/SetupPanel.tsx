@@ -1,6 +1,7 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { HOSTED, REPO_URL } from "../env";
 import { fmtDuration } from "../format";
+import { CopyButton } from "./Kinetic";
 import type { Launcher } from "../launcher";
 import {
   COMFORT_THRESHOLD,
@@ -160,8 +161,8 @@ function SeedEditor({ seeds, onChange }: { seeds: number[]; onChange: (seeds: nu
 }
 
 const ENGINES: { id: Engine; title: string; sub: string; lock?: string }[] = [
-  { id: "llm", title: "ISOLATED PYTORCH TENSORS", sub: "One brain per agent, batched on the GPU" },
-  { id: "rehearsal", title: "REHEARSAL", sub: "CPU brains · needs Torch on Windows", lock: "GPU ONLY" },
+  { id: "llm", title: "ISOLATED PYTORCH TENSORS", sub: "One brain per agent, batched tensor math" },
+  { id: "rehearsal", title: "REHEARSAL", sub: "Slow-motion preview brains", lock: "GPU ONLY" },
 ];
 
 export default function SetupPanel({ draft, onDraft, launcher, calibration, canClose, onClose, onBegin }: SetupPanelProps) {
@@ -185,11 +186,13 @@ export default function SetupPanel({ draft, onDraft, launcher, calibration, canC
     draft.members === RECOMMENDED.members && draft.epochs === RECOMMENDED.epochs && draft.engine === RECOMMENDED.engine && matches(PRESETS[1]);
   const command = [
     "python experiment.py",
-    draft.engine === "rehearsal" ? `--device cpu --pace ${draft.pace}` : "--device cuda",
+    draft.engine === "rehearsal" ? `--device cpu --pace ${draft.pace}` : null,
     `--agents ${draft.members}`,
     `--epochs ${draft.epochs}`,
     `--seeds ${draft.seeds.join(" ")}`,
-  ].join(" ");
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <section className="hud-card setup" aria-label="New simulation">
@@ -266,7 +269,7 @@ export default function SetupPanel({ draft, onDraft, launcher, calibration, canC
           <span className="setup__label">ENGINE</span>
           {capability && (
             <span className="dial__hint" data-tone={capability.available === false ? "fail" : capability.available ? "good" : "idle"}>
-              {capability.available === null ? "checking…" : capability.detail}
+              {capability.available === true ? "READY" : capability.available === false ? "UNAVAILABLE" : capability.detail}
             </span>
           )}
         </div>
@@ -353,18 +356,24 @@ export default function SetupPanel({ draft, onDraft, launcher, calibration, canC
       {HOSTED ? (
         <div className="setup__offline" role="status">
           <p>
-            This is a hosted replay of a finished sweep. New towns train on a local CUDA GPU: clone{" "}
+            This is a hosted replay of a finished sweep. New towns train on your own machine: clone{" "}
             <a href={REPO_URL} target="_blank" rel="noreferrer">
               the repository
             </a>
             , start the dashboard with <code>npm run dev</code>, or run:
           </p>
-          <code className="setup__command">{command}</code>
+          <div className="setup__cmdrow">
+            <code className="setup__command">{command}</code>
+            <CopyButton text={command} />
+          </div>
         </div>
       ) : offline ? (
         <div className="setup__offline" role="status">
           <p>The launcher is offline (open this page through <code>npm run dev</code>). Start the run from a terminal instead:</p>
-          <code className="setup__command">{command}</code>
+          <div className="setup__cmdrow">
+            <code className="setup__command">{command}</code>
+            <CopyButton text={command} />
+          </div>
         </div>
       ) : (
         <p className="setup__fineprint">

@@ -5,6 +5,7 @@ import type { Frame } from "../model";
 import { lensColor, lensKeyOf, type Lens } from "../people";
 import { createEdgeMaterial } from "./edgeMaterial";
 import { figureGeometry } from "./facets";
+import type { Placements } from "./layout";
 
 export const CAPACITY = 256;
 
@@ -23,6 +24,7 @@ interface PeopleProps {
   frame: Frame | null;
   frameKey: string;
   gridSize: number;
+  placements: Placements;
   lens: Lens;
   isolate: string | null;
   wealthSpan: number;
@@ -35,7 +37,7 @@ interface PeopleProps {
 }
 
 const FIGURE = figureGeometry();
-const GLOW = new THREE.CircleGeometry(0.56, 6).rotateX(-Math.PI / 2);
+const GLOW = new THREE.CircleGeometry(0.42, 6).rotateX(-Math.PI / 2);
 const RING = new THREE.RingGeometry(0.46, 0.5, 6, 1, Math.PI / 6).rotateX(-Math.PI / 2);
 const BEAM = new THREE.CylinderGeometry(0.035, 0.035, 7, 4, 1, true).translate(0, 3.5, 0);
 const HALO = new THREE.RingGeometry(0.55, 0.6, 6, 1, Math.PI / 6).rotateX(-Math.PI / 2);
@@ -57,6 +59,7 @@ export default function People({
   frame,
   frameKey,
   gridSize,
+  placements,
   lens,
   isolate,
   wealthSpan,
@@ -85,6 +88,7 @@ export default function People({
     duration: new Float32Array(CAPACITY),
     hop: new Float32Array(CAPACITY),
     heading: new Float32Array(CAPACITY),
+    wander: new Float32Array(CAPACITY),
     colorFrom: new Float32Array(CAPACITY * 3),
     colorTo: new Float32Array(CAPACITY * 3),
     colorNow: new Float32Array(CAPACITY * 3),
@@ -127,8 +131,10 @@ export default function People({
     for (let i = 0; i < count; i += 1) {
       const agent = agents[i];
       const o = i * 2;
-      const tx = agent.x - half + 0.5;
-      const tz = agent.y - half + 0.5;
+      const placed = placements.get(agent.id);
+      const tx = placed ? placed.x : agent.x - half + 0.5;
+      const tz = placed ? placed.z : agent.y - half + 0.5;
+      s.wander[i] = !placed || placed.zone === "home" ? 1 : 0;
       const known = i < s.count && m.ids[i] === agent.id;
       const fx = known ? m.positions[i * 3] : tx;
       const fz = known ? m.positions[i * 3 + 2] : tz;
@@ -140,7 +146,7 @@ export default function People({
       if (distance > 0.05) s.heading[i] = Math.atan2(tx - fx, tz - fz);
       else if (!known) s.heading[i] = jitter(agent.id + 7) * Math.PI * 2;
       s.start[i] = now + (reduced || !known ? 0 : jitter(agent.id) * 320);
-      s.duration[i] = reduced ? 1 : Math.min(1700, 420 + distance * 52);
+      s.duration[i] = reduced ? 1 : Math.min(2600, 520 + distance * 70);
       s.hop[i] = distance > 0.6 && !reduced ? Math.min(1.4, 0.3 + distance * 0.06) : 0;
       if (!known) {
         m.positions[i * 3] = tx;
@@ -158,7 +164,7 @@ export default function People({
     s.count = count;
     s.preview = preview;
     s.speakers = preview ? [] : agents.slice(0, count).flatMap((a, i) => (a.broadcast ? [i] : []));
-  }, [frameKey, frame, gridSize, reduced, motion, tint]);
+  }, [frameKey, frame, gridSize, placements, reduced, motion, tint]);
 
   useEffect(() => {
     const s = state.current;
@@ -194,9 +200,11 @@ export default function People({
       const o3 = i * 3;
       const t = s.duration[i] <= 1 ? 1 : Math.max(0, Math.min(1, (now - s.start[i]) / s.duration[i]));
       const e = ease(t);
-      const x = s.from[o2] + (s.to[o2] - s.from[o2]) * e;
-      const z = s.from[o2 + 1] + (s.to[o2 + 1] - s.from[o2 + 1]) * e;
       const id = m.ids[i];
+      const settle = Math.max(0, Math.min(1, (now - s.start[i] - s.duration[i]) / 1500));
+      const amble = reduced ? 0 : s.wander[i] * 0.22 * settle * settle;
+      const x = s.from[o2] + (s.to[o2] - s.from[o2]) * e + amble * Math.sin(now * 0.00035 + id * 1.9);
+      const z = s.from[o2 + 1] + (s.to[o2 + 1] - s.from[o2 + 1]) * e + amble * Math.cos(now * 0.00027 + id * 2.7);
       const bob = reduced ? 0 : s.preview ? 0.05 * Math.sin(now * 0.0021 + id * 1.7) : 0.022 * Math.sin(now * 0.004 + id);
       const y = s.hop[i] * Math.sin(Math.PI * e) + bob;
       m.positions[o3] = x;
@@ -249,7 +257,7 @@ export default function People({
       });
       ringMesh.count = Math.min(s.speakers.length, CAPACITY);
       ringMesh.instanceMatrix.needsUpdate = true;
-      if (ringMaterial.current) ringMaterial.current.opacity = 0.6 * (1 - cycle);
+      if (ringMaterial.current) ringMaterial.current.opacity = 0.26 * (1 - cycle);
     } else {
       ringMesh.count = 0;
     }
@@ -297,7 +305,7 @@ export default function People({
   return (
     <group>
       <instancedMesh ref={glows} args={[GLOW, undefined, CAPACITY]} frustumCulled={false} renderOrder={1}>
-        <meshBasicMaterial transparent opacity={0.5} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
+        <meshBasicMaterial transparent opacity={0.3} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
       </instancedMesh>
       <instancedMesh
         ref={figures}
