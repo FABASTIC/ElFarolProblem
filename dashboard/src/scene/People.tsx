@@ -3,6 +3,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, type MutableRefObject } fr
 import * as THREE from "three";
 import type { Frame } from "../model";
 import { lensColor, lensKeyOf, type Lens } from "../people";
+import { createEdgeMaterial } from "./edgeMaterial";
+import { figureGeometry } from "./facets";
 
 export const CAPACITY = 256;
 
@@ -32,17 +34,13 @@ interface PeopleProps {
   onSelect: (id: number) => void;
 }
 
-const BODY_R = 0.25;
-const BODY_LEN = 0.44;
-const BODY = new THREE.CapsuleGeometry(BODY_R, BODY_LEN, 4, 10).translate(0, BODY_R + BODY_LEN / 2, 0);
-const HEAD = new THREE.SphereGeometry(0.2, 14, 10).translate(0, BODY_LEN + BODY_R * 2 + 0.17, 0);
-const GLOW = new THREE.CircleGeometry(0.56, 28).rotateX(-Math.PI / 2);
-const RING = new THREE.RingGeometry(0.42, 0.5, 40).rotateX(-Math.PI / 2);
-const BEAM = new THREE.CylinderGeometry(0.06, 0.06, 7, 10, 1, true).translate(0, 3.5, 0);
-const HALO = new THREE.RingGeometry(0.5, 0.62, 48).rotateX(-Math.PI / 2);
+const FIGURE = figureGeometry();
+const GLOW = new THREE.CircleGeometry(0.56, 6).rotateX(-Math.PI / 2);
+const RING = new THREE.RingGeometry(0.46, 0.5, 6, 1, Math.PI / 6).rotateX(-Math.PI / 2);
+const BEAM = new THREE.CylinderGeometry(0.035, 0.035, 7, 4, 1, true).translate(0, 3.5, 0);
+const HALO = new THREE.RingGeometry(0.55, 0.6, 6, 1, Math.PI / 6).rotateX(-Math.PI / 2);
 const DECEPTIVE = new Set(["false_go", "false_stay"]);
-const DIM = new THREE.Color("#161b24");
-const HEAD_TONE = new THREE.Color("#e9e1d3");
+const DIM = new THREE.Color("#1c1c1c");
 const WHITE = new THREE.Color("#ffffff");
 const COLOR_MS = 420;
 
@@ -69,8 +67,7 @@ export default function People({
   onHover,
   onSelect,
 }: PeopleProps) {
-  const bodies = useRef<THREE.InstancedMesh>(null);
-  const heads = useRef<THREE.InstancedMesh>(null);
+  const figures = useRef<THREE.InstancedMesh>(null);
   const glows = useRef<THREE.InstancedMesh>(null);
   const rings = useRef<THREE.InstancedMesh>(null);
   const ringMaterial = useRef<THREE.MeshBasicMaterial>(null);
@@ -78,6 +75,7 @@ export default function People({
   const halo = useRef<THREE.Mesh>(null);
   const frameRef = useRef<Frame | null>(frame);
   const selectedRef = useRef<number | null>(selectedId);
+  const material = useMemo(() => createEdgeMaterial({ face: "#121212", headInk: 0.45, width: 1.25, rim: 0.12 }), []);
   const dummy = useMemo(() => new THREE.Object3D(), []);
   const tint = useMemo(() => new THREE.Color(), []);
   const state = useRef({
@@ -86,6 +84,7 @@ export default function People({
     start: new Float64Array(CAPACITY),
     duration: new Float32Array(CAPACITY),
     hop: new Float32Array(CAPACITY),
+    heading: new Float32Array(CAPACITY),
     colorFrom: new Float32Array(CAPACITY * 3),
     colorTo: new Float32Array(CAPACITY * 3),
     colorNow: new Float32Array(CAPACITY * 3),
@@ -100,10 +99,12 @@ export default function People({
 
   selectedRef.current = selectedId;
 
+  useEffect(() => () => material.dispose(), [material]);
+
   useLayoutEffect(() => {
     const sphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), gridSize);
-    for (const mesh of [bodies.current, heads.current]) {
-      if (!mesh) continue;
+    const mesh = figures.current;
+    if (mesh) {
       mesh.boundingSphere = sphere;
       for (let i = 0; i < CAPACITY; i += 1) mesh.setColorAt(i, DIM);
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
@@ -136,6 +137,8 @@ export default function People({
       s.to[o] = tx;
       s.to[o + 1] = tz;
       const distance = Math.hypot(tx - fx, tz - fz);
+      if (distance > 0.05) s.heading[i] = Math.atan2(tx - fx, tz - fz);
+      else if (!known) s.heading[i] = jitter(agent.id + 7) * Math.PI * 2;
       s.start[i] = now + (reduced || !known ? 0 : jitter(agent.id) * 320);
       s.duration[i] = reduced ? 1 : Math.min(1700, 420 + distance * 52);
       s.hop[i] = distance > 0.6 && !reduced ? Math.min(1.4, 0.3 + distance * 0.06) : 0;
@@ -176,11 +179,10 @@ export default function People({
   useFrame((_, delta) => {
     const s = state.current;
     const m = motion.current;
-    const bodyMesh = bodies.current;
-    const headMesh = heads.current;
+    const figureMesh = figures.current;
     const glowMesh = glows.current;
     const ringMesh = rings.current;
-    if (!bodyMesh || !headMesh || !glowMesh || !ringMesh) return;
+    if (!figureMesh || !glowMesh || !ringMesh) return;
     const now = performance.now();
     const colorT = ease(Math.min(1, (now - s.colorStart) / COLOR_MS));
     const hovered = hoveredId.current;
@@ -207,18 +209,18 @@ export default function People({
       const focus = id === hovered || id === selected;
       if (id === selected) selectedIndex = i;
       const scale = focus ? 1.22 : 1;
+      const lean = t < 1 && s.hop[i] > 0 ? Math.sin(Math.PI * e) * 0.18 : 0;
       dummy.position.set(x, y, z);
+      dummy.rotation.set(lean, s.heading[i], 0, "YXZ");
       dummy.scale.set(scale, scale, scale);
       dummy.updateMatrix();
-      bodyMesh.setMatrixAt(i, dummy.matrix);
-      headMesh.setMatrixAt(i, dummy.matrix);
+      figureMesh.setMatrixAt(i, dummy.matrix);
       tint.setRGB(s.colorNow[o3], s.colorNow[o3 + 1], s.colorNow[o3 + 2]);
-      if (focus) tint.lerp(WHITE, 0.28);
-      tint.lerp(DIM, s.dim[i] * 0.82);
-      bodyMesh.setColorAt(i, tint);
-      tint.copy(HEAD_TONE).lerp(DIM, s.dim[i] * 0.82);
-      headMesh.setColorAt(i, tint);
+      if (focus) tint.lerp(WHITE, 0.35);
+      tint.lerp(DIM, s.dim[i] * 0.86);
+      figureMesh.setColorAt(i, tint);
       dummy.position.set(x, 0.015, z);
+      dummy.rotation.set(0, 0, 0);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
       glowMesh.setMatrixAt(i, dummy.matrix);
@@ -227,10 +229,9 @@ export default function People({
       tint.setRGB(s.glow[o3] * glow, s.glow[o3 + 1] * glow, s.glow[o3 + 2] * glow);
       glowMesh.setColorAt(i, tint);
     }
-    bodyMesh.count = s.count;
-    headMesh.count = s.count;
+    figureMesh.count = s.count;
     glowMesh.count = s.count;
-    for (const mesh of [bodyMesh, headMesh, glowMesh]) {
+    for (const mesh of [figureMesh, glowMesh]) {
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     }
@@ -241,13 +242,14 @@ export default function People({
       s.speakers.forEach((index, slot) => {
         const o = index * 3;
         dummy.position.set(m.positions[o], 0.04, m.positions[o + 2]);
+        dummy.rotation.set(0, 0, 0);
         dummy.scale.set(scale, 1, scale);
         dummy.updateMatrix();
         ringMesh.setMatrixAt(slot, dummy.matrix);
       });
       ringMesh.count = Math.min(s.speakers.length, CAPACITY);
       ringMesh.instanceMatrix.needsUpdate = true;
-      if (ringMaterial.current) ringMaterial.current.opacity = 0.55 * (1 - cycle);
+      if (ringMaterial.current) ringMaterial.current.opacity = 0.6 * (1 - cycle);
     } else {
       ringMesh.count = 0;
     }
@@ -260,8 +262,8 @@ export default function People({
         const o = selectedIndex * 3;
         beam.current.position.set(m.positions[o], 0, m.positions[o + 2]);
         halo.current.position.set(m.positions[o], 0.03, m.positions[o + 2]);
-        const spin = reduced ? 1 : 1 + 0.08 * Math.sin(now * 0.006);
-        halo.current.scale.set(spin, 1, spin);
+        const spin = reduced ? 0 : now * 0.0006;
+        halo.current.rotation.y = spin;
       }
     }
   });
@@ -295,29 +297,24 @@ export default function People({
   return (
     <group>
       <instancedMesh ref={glows} args={[GLOW, undefined, CAPACITY]} frustumCulled={false} renderOrder={1}>
-        <meshBasicMaterial transparent opacity={0.55} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
+        <meshBasicMaterial transparent opacity={0.5} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
       </instancedMesh>
       <instancedMesh
-        ref={bodies}
-        args={[BODY, undefined, CAPACITY]}
+        ref={figures}
+        args={[FIGURE, material, CAPACITY]}
         frustumCulled={false}
         onPointerMove={handleMove}
         onPointerOut={handleOut}
         onClick={handleClick}
-      >
-        <meshLambertMaterial toneMapped={false} />
-      </instancedMesh>
-      <instancedMesh ref={heads} args={[HEAD, undefined, CAPACITY]} frustumCulled={false}>
-        <meshLambertMaterial toneMapped={false} />
-      </instancedMesh>
+      />
       <instancedMesh ref={rings} args={[RING, undefined, CAPACITY]} frustumCulled={false} renderOrder={2}>
-        <meshBasicMaterial ref={ringMaterial} color="#f2ead8" transparent opacity={0} depthWrite={false} toneMapped={false} />
+        <meshBasicMaterial ref={ringMaterial} color="#ece9e2" transparent opacity={0} depthWrite={false} toneMapped={false} />
       </instancedMesh>
       <mesh ref={beam} geometry={BEAM} visible={false} renderOrder={3}>
-        <meshBasicMaterial color="#f6f1e4" transparent opacity={0.22} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
+        <meshBasicMaterial color="#ece9e2" transparent opacity={0.28} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
       </mesh>
       <mesh ref={halo} geometry={HALO} visible={false} renderOrder={3}>
-        <meshBasicMaterial color="#f6f1e4" transparent opacity={0.9} depthWrite={false} toneMapped={false} />
+        <meshBasicMaterial color="#ece9e2" transparent opacity={0.95} depthWrite={false} toneMapped={false} />
       </mesh>
     </group>
   );

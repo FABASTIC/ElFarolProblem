@@ -1,5 +1,5 @@
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { useEffect, useMemo, type MutableRefObject, type RefObject } from "react";
+import { useEffect, useMemo, useRef, type MutableRefObject, type RefObject } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { Frame } from "../model";
@@ -30,27 +30,94 @@ interface WorldProps {
   onSelect: (id: number) => void;
 }
 
+interface Pose {
+  target: THREE.Vector3;
+  zoom: number;
+  phi: number;
+  theta: number;
+}
+
+interface Glide {
+  start: number;
+  duration: number;
+  from: Pose;
+  to: Pose;
+}
+
 const ELEVATION = 0.62;
 const AZIMUTH = Math.PI / 4;
 const DISTANCE = 140;
 const FOCUS = new THREE.Vector3(-3.5, 0, -3.5);
 
-function Rig({ extent, resetToken, drift, reduced }: { extent: number; resetToken: number; drift: boolean; reduced: boolean }) {
+function expoOut(t: number): number {
+  return t >= 1 ? 1 : 1 - Math.pow(2, -10 * t);
+}
+
+function shortestAngle(from: number, to: number): number {
+  let delta = (to - from) % (Math.PI * 2);
+  if (delta > Math.PI) delta -= Math.PI * 2;
+  if (delta < -Math.PI) delta += Math.PI * 2;
+  return from + delta;
+}
+
+interface RigProps {
+  extent: number;
+  resetToken: number;
+  drift: boolean;
+  reduced: boolean;
+  selectedId: number | null;
+  motion: MutableRefObject<Motion>;
+}
+
+function Rig({ extent, resetToken, drift, reduced, selectedId, motion }: RigProps) {
   const camera = useThree((state) => state.camera) as THREE.OrthographicCamera;
   const gl = useThree((state) => state.gl);
   const width = useThree((state) => state.size.width);
   const height = useThree((state) => state.size.height);
   const controls = useMemo(() => new OrbitControls(camera, gl.domElement), [camera, gl]);
   const shift = useMemo(() => new THREE.Vector3(), []);
+  const spherical = useMemo(() => new THREE.Spherical(), []);
+  const offset = useMemo(() => new THREE.Vector3(), []);
+  const glide = useRef<Glide | null>(null);
+  const entered = useRef(false);
+  const lastReset = useRef(resetToken);
 
   const fitZoom = useMemo(() => {
     const diagonal = extent * Math.SQRT2;
     return Math.max(1.2, Math.min(width / (diagonal * 1.02), height / (diagonal * 0.64)));
   }, [extent, width, height]);
 
+  const home = useMemo<Pose>(() => ({ target: FOCUS.clone(), zoom: fitZoom, phi: Math.PI / 2 - ELEVATION, theta: AZIMUTH }), [fitZoom]);
+
+  const apply = (pose: Pose) => {
+    spherical.set(DISTANCE, pose.phi, pose.theta);
+    offset.setFromSpherical(spherical);
+    controls.target.copy(pose.target);
+    camera.position.copy(pose.target).add(offset);
+    camera.zoom = pose.zoom;
+    camera.lookAt(pose.target);
+    camera.updateProjectionMatrix();
+  };
+
+  const current = (): Pose => {
+    offset.copy(camera.position).sub(controls.target);
+    spherical.setFromVector3(offset);
+    return { target: controls.target.clone(), zoom: camera.zoom, phi: spherical.phi, theta: spherical.theta };
+  };
+
+  const glideTo = (to: Pose, duration: number) => {
+    if (reduced) {
+      apply(to);
+      controls.update();
+      return;
+    }
+    glide.current = { start: performance.now(), duration, from: current(), to: { ...to, theta: shortestAngle(current().theta, to.theta) } };
+    controls.enabled = false;
+  };
+
   useEffect(() => {
     controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
+    controls.dampingFactor = 0.07;
     controls.enablePan = true;
     controls.screenSpacePanning = true;
     controls.panSpeed = 0.9;
@@ -60,25 +127,40 @@ function Rig({ extent, resetToken, drift, reduced }: { extent: number; resetToke
     controls.maxPolarAngle = 1.3;
     controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
     controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
-    return () => controls.dispose();
-  }, [controls]);
-
-  useEffect(() => {
-    camera.position.set(
-      FOCUS.x + DISTANCE * Math.cos(ELEVATION) * Math.sin(AZIMUTH),
-      DISTANCE * Math.sin(ELEVATION),
-      FOCUS.z + DISTANCE * Math.cos(ELEVATION) * Math.cos(AZIMUTH),
-    );
-    camera.zoom = fitZoom;
     camera.near = -1000;
     camera.far = 1000;
-    camera.lookAt(FOCUS);
-    camera.updateProjectionMatrix();
-    controls.minZoom = fitZoom * 0.6;
+    return () => controls.dispose();
+  }, [controls, camera]);
+
+  useEffect(() => {
+    controls.minZoom = fitZoom * 0.5;
     controls.maxZoom = fitZoom * 6;
-    controls.target.copy(FOCUS);
-    controls.update();
-  }, [camera, controls, fitZoom, resetToken]);
+    if (!entered.current) {
+      entered.current = true;
+      apply({ target: FOCUS.clone().add(new THREE.Vector3(6, 0, -10)), zoom: fitZoom * 0.42, phi: 0.2, theta: AZIMUTH + 1.15 });
+      glideTo(home, 2800);
+      return;
+    }
+    if (!glide.current) {
+      camera.zoom = Math.min(controls.maxZoom, Math.max(controls.minZoom, camera.zoom));
+      camera.updateProjectionMatrix();
+    }
+  }, [fitZoom]);
+
+  useEffect(() => {
+    if (lastReset.current === resetToken) return;
+    lastReset.current = resetToken;
+    glideTo(home, 1500);
+  }, [resetToken, home]);
+
+  useEffect(() => {
+    if (selectedId == null) return;
+    const index = motion.current.indexById.get(selectedId);
+    if (index == null) return;
+    const p = motion.current.positions;
+    const now = current();
+    glideTo({ target: new THREE.Vector3(p[index * 3], 0, p[index * 3 + 2]), zoom: Math.max(now.zoom, fitZoom * 1.7), phi: Math.min(now.phi, 0.95), theta: now.theta }, 1300);
+  }, [selectedId]);
 
   useEffect(() => {
     controls.autoRotate = drift && !reduced;
@@ -86,12 +168,29 @@ function Rig({ extent, resetToken, drift, reduced }: { extent: number; resetToke
   }, [controls, drift, reduced]);
 
   useFrame(() => {
+    const active = glide.current;
+    if (active) {
+      const t = Math.min(1, (performance.now() - active.start) / active.duration);
+      const e = expoOut(t);
+      apply({
+        target: active.from.target.clone().lerp(active.to.target, e),
+        zoom: active.from.zoom + (active.to.zoom - active.from.zoom) * e,
+        phi: active.from.phi + (active.to.phi - active.from.phi) * e,
+        theta: active.from.theta + (active.to.theta - active.from.theta) * e,
+      });
+      if (t >= 1) {
+        glide.current = null;
+        controls.enabled = true;
+        controls.update();
+      }
+      return;
+    }
     controls.update();
     const limit = extent / 2;
-    const t = controls.target;
-    shift.set(THREE.MathUtils.clamp(t.x, -limit, limit) - t.x, -t.y, THREE.MathUtils.clamp(t.z, -limit, limit) - t.z);
+    const target = controls.target;
+    shift.set(THREE.MathUtils.clamp(target.x, -limit, limit) - target.x, -target.y, THREE.MathUtils.clamp(target.z, -limit, limit) - target.z);
     if (shift.lengthSq() > 0) {
-      t.add(shift);
+      target.add(shift);
       camera.position.add(shift);
     }
   });
@@ -155,11 +254,9 @@ export default function World({
       dpr={[1, 2]}
       gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
       camera={{ position: [70, 57, 70], zoom: 8, near: -1000, far: 1000 }}
-      aria-label="Town of El Farol: people walk between their homes and the bar each night"
+      aria-label="Town of El Farol: faceted figures walk between their homes and the bar each night"
     >
-      <hemisphereLight args={["#8597cc", "#0b0e14", 2.6]} />
-      <directionalLight position={[-36, 60, 24]} intensity={1.7} color="#b7c4ff" />
-      <Rig extent={gridSize + BORDER} resetToken={resetToken} drift={drift} reduced={reduced} />
+      <Rig extent={gridSize + BORDER} resetToken={resetToken} drift={drift} reduced={reduced} selectedId={selectedId} motion={motion} />
       <Ground gridSize={gridSize} barMin={barMin} barMax={barMax} />
       <Tavern gridSize={gridSize} barMin={barMin} barMax={barMax} crowd={crowd} fill={fill} reduced={reduced} />
       <People

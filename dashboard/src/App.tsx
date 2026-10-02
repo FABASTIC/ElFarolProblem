@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import AbstractIntro from "./components/AbstractIntro";
 import AgentCard from "./components/AgentCard";
 import BootOverlay from "./components/BootOverlay";
 import Boundary from "./components/Boundary";
@@ -33,6 +34,9 @@ import type { AnalyticsReport, ComparisonRow, LiveState } from "./types";
 
 const STALE_AFTER_S = 900;
 const DRAFT_KEY = "elfarol.setup.draft";
+const ABSTRACT_EXIT_MS = 1150;
+
+type IntroState = "open" | "leaving" | "closed";
 
 const STATUS: Record<string, { label: string; tone: string }> = {
   launching: { label: "STARTING", tone: "warn" },
@@ -64,6 +68,13 @@ function loadDraft(): LaunchConfig {
 
 export default function App() {
   const launcher = useLauncher();
+  const [intro, setIntro] = useState<IntroState>("open");
+  const enterTown = useCallback(() => setIntro("leaving"), []);
+  useEffect(() => {
+    if (intro !== "leaving") return;
+    const id = window.setTimeout(() => setIntro("closed"), ABSTRACT_EXIT_MS);
+    return () => window.clearTimeout(id);
+  }, [intro]);
   const launcherState = launcher.status?.state ?? "idle";
   const launcherActive = ACTIVE_STATES.has(launcherState);
   const [hot, setHot] = useState(false);
@@ -210,6 +221,40 @@ export default function App() {
   const [resetToken, setResetToken] = useState(0);
   const [speech, setSpeech] = useState(true);
   const reduced = useMemo(() => prefersReducedMotion(), []);
+  const worldRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const element = worldRef.current;
+    if (!element || reduced) return;
+    const target = { x: 0, y: 0 };
+    const current = { x: 0, y: 0 };
+    let frame = 0;
+    const tick = () => {
+      current.x += (target.x - current.x) * 0.06;
+      current.y += (target.y - current.y) * 0.06;
+      element.style.setProperty("--mx", current.x.toFixed(4));
+      element.style.setProperty("--my", current.y.toFixed(4));
+      frame = Math.abs(target.x - current.x) + Math.abs(target.y - current.y) > 0.0005 ? requestAnimationFrame(tick) : 0;
+    };
+    const aim = (x: number, y: number) => {
+      target.x = x;
+      target.y = y;
+      if (!frame) frame = requestAnimationFrame(tick);
+    };
+    const onMove = (event: PointerEvent) => {
+      if (event.pointerType !== "mouse") return;
+      if ((event.target as HTMLElement | null)?.closest(".hud, .world__tools, .boot")) return;
+      aim((event.clientX / window.innerWidth) * 2 - 1, (event.clientY / window.innerHeight) * 2 - 1);
+    };
+    const onLeave = () => aim(0, 0);
+    element.addEventListener("pointermove", onMove, { passive: true });
+    element.addEventListener("pointerleave", onLeave);
+    return () => {
+      cancelAnimationFrame(frame);
+      element.removeEventListener("pointermove", onMove);
+      element.removeEventListener("pointerleave", onLeave);
+    };
+  }, [reduced, view]);
 
   const inSetup = mode === "setup";
   useEffect(() => {
@@ -279,6 +324,7 @@ export default function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
+      if (intro === "open") return;
       if (target?.closest("input, textarea, select, [contenteditable='true'], .chart")) return;
       if (event.key === "Escape") {
         if (selectedId != null) setSelectedId(null);
@@ -306,7 +352,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [frames.length, onPlaying, onStep, playing, running, selectedId, showSetup, trials.length]);
+  }, [frames.length, intro, onPlaying, onStep, playing, running, selectedId, showSetup, trials.length]);
 
   const feeds: FeedHealth[] = [
     { name: "LIVE", file: "live_state.json", state: live.state, receivedAt: live.receivedAt },
@@ -360,11 +406,23 @@ export default function App() {
         onStop={() => void launcher.stop()}
         canNew={!running && !showSetup}
         onNew={onNew}
+        onAbstract={() => setIntro("open")}
       />
+      {intro !== "closed" && <AbstractIntro leaving={intro === "leaving"} onEnter={enterTown} />}
 
       {view === "world" ? (
-        <main className="world" data-mode={mode}>
-          <div className="world__sky" aria-hidden="true" />
+        <main className="world" data-mode={mode} ref={worldRef}>
+          <div className="world__sky" aria-hidden="true">
+            <svg className="world__rings" viewBox="-500 -500 1000 1000">
+              {[150, 250, 360, 480].map((r) => (
+                <circle key={r} r={r} />
+              ))}
+              <line x1={-1400} y1={0} x2={1400} y2={0} />
+              <line x1={0} y1={-1400} x2={0} y2={1400} strokeDasharray="2 7" />
+              <circle className="world__rings-dot" cx={-480} cy={0} r={2.5} />
+              <circle className="world__rings-dot" cx={480} cy={0} r={2.5} />
+            </svg>
+          </div>
           <Boundary
             resetKey={selectedKey ?? "none"}
             fallback={(error, retry) => (
@@ -378,6 +436,7 @@ export default function App() {
             )}
           >
             <div className="world__canvas">
+              {intro !== "open" && (
               <World
                 frame={worldFrame}
                 frameKey={frameKey}
@@ -399,6 +458,7 @@ export default function App() {
                 onHover={setHoverId}
                 onSelect={setSelectedId}
               />
+              )}
             </div>
           </Boundary>
           <div className="world__labels" ref={overlay} aria-hidden="true">

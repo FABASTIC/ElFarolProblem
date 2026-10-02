@@ -195,7 +195,9 @@ export default function SetupPanel({ draft, onDraft, launcher, calibration, canC
       <header className="setup__head">
         <div>
           <p className="eyebrow">NEW SIMULATION</p>
-          <h2>Define the town, then open the bar</h2>
+          <h2>
+            Define the town, <em className="serif">then open the bar</em>
+          </h2>
           <p className="setup__lede">The world below is staged. Nothing runs until you press Begin.</p>
         </div>
         {canClose && (
