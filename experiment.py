@@ -52,16 +52,30 @@ ARMOR_DEFAULTS = {
 LIVE_STATE_FILENAME = "live_state.json"
 MANIFEST_FILENAME = "trial_manifest.json"
 BRAINS_FILENAME = "brains.pt"
-NEURAL_MODEL = "isolated torch brains :: MLP-DQN per agent"
+NEURAL_MODEL = "isolated torch brains :: speaker + actor DQN per agent"
 OPTIONS = ("honest_go", "honest_stay", "false_go", "false_stay")
-GOES = (True, False, False, True)
-CLAIMS_GO = (True, False, True, False)
+CLAIMS = ("staying", "going")
+ACTIONS = ("home", "bar")
 EXTRA_FEATURES = 5
+ACT_EXTRA = 2
+SPEAKER_KEYS = ("s_w1", "s_b1", "s_w2", "s_b2", "s_wq", "s_bq")
+ACTOR_KEYS = ("a_w1", "a_b1", "a_w2", "a_b2", "a_wq", "a_bq", "a_wf", "a_bf", "a_h")
+PARAM_KEYS = SPEAKER_KEYS + ACTOR_KEYS
+EPOCH_FIELDS = [
+    "epoch", "bar_attendance", "bar_capacity", "comfort_threshold",
+    "attendance_over_threshold", "total_utility", "mean_utility",
+    "deception_index", "truthfulness_ratio", "deception_count",
+    "truthful_count", "broadcast_count", "broadcast_correlation",
+    "town_broadcast_ratio", "actual_attendance", "intended_attendance",
+]
 
 
 def observation_dim(history):
     return int(history) * 2 + len(OPTIONS) + EXTRA_FEATURES
-PARAM_KEYS = ("w1", "b1", "w2", "b2", "wq", "bq", "wf", "bf")
+
+
+def actor_dim(history):
+    return observation_dim(history) + ACT_EXTRA
 CHOICE_TEXT = {
     "honest_go": "going, and saying so",
     "honest_stay": "staying home, and saying so",
@@ -242,57 +256,97 @@ class AgentMemory:
         self.capacity = int(capacity)
         self.history = int(history)
         self.input_dim = observation_dim(self.history)
-        self.states = torch.zeros(self.capacity, self.input_dim, device=device)
-        self.next_states = torch.zeros(self.capacity, self.input_dim, device=device)
-        self.rewards = torch.zeros(self.capacity, len(OPTIONS), device=device)
-        self.attendance = torch.zeros(self.capacity, device=device)
+        self.actor_dim = actor_dim(self.history)
+        self.act_states = torch.zeros(self.capacity, self.actor_dim, device=device)
+        self.act_rewards = torch.zeros(self.capacity, len(ACTIONS), device=device)
+        self.act_next = torch.zeros(self.capacity, self.input_dim, device=device)
+        self.act_attendance = torch.zeros(self.capacity, device=device)
+        self.speak_states = torch.zeros(self.capacity, self.input_dim, device=device)
+        self.speak_claims = torch.zeros(self.capacity, dtype=torch.long, device=device)
+        self.speak_returns = torch.zeros(self.capacity, device=device)
+        self.speak_next = torch.zeros(self.capacity, self.input_dim, device=device)
         self.attendance_history = torch.zeros(self.history, device=device)
         self.reward_history = torch.zeros(self.history, device=device)
-        self.last_action = torch.zeros(len(OPTIONS), device=device)
-        self.claims_heard = 0.0
+        self.last_strategy = torch.zeros(len(OPTIONS), device=device)
+        self.last_ratio = 0.0
         self.claim_reliability = 0.0
         self.claims_made = 0
         self.claims_true = 0
-        self.size = 0
-        self.cursor = 0
+        self.act_size = 0
+        self.act_cursor = 0
+        self.speak_size = 0
+        self.speak_cursor = 0
+        self.pending_speech = None
 
     def observation(self, threshold_ratio, channel):
         truth = (self.claims_true + 1.0) / (self.claims_made + 2.0) if channel else 0.0
         extras = torch.tensor(
-            [threshold_ratio, self.claims_heard * channel, self.claim_reliability * channel, truth, float(channel)],
-            device=self.states.device,
+            [threshold_ratio, self.last_ratio * channel, self.claim_reliability * channel, truth, float(channel)],
+            device=self.act_states.device,
         )
-        return torch.cat([self.attendance_history, self.reward_history, self.last_action, extras])
+        return torch.cat([self.attendance_history, self.reward_history, self.last_strategy, extras])
 
-    def remember(self, attendance_fraction, reward, action_index):
+    def remember(self, attendance_fraction, reward, strategy_index, ratio, channel):
         self.attendance_history = torch.roll(self.attendance_history, 1)
         self.attendance_history[0] = attendance_fraction
         self.reward_history = torch.roll(self.reward_history, 1)
         self.reward_history[0] = reward
-        self.last_action.zero_()
-        self.last_action[action_index] = 1.0
+        self.last_strategy.zero_()
+        self.last_strategy[strategy_index] = 1.0
+        if channel:
+            self.last_ratio = ratio
+            self.claim_reliability = 0.7 * self.claim_reliability + 0.3 * (1.0 - abs(ratio - attendance_fraction))
 
-    def push(self, state, rewards, next_state, attendance_fraction):
-        i = self.cursor
-        self.states[i] = state
-        self.rewards[i] = rewards
-        self.next_states[i] = next_state
-        self.attendance[i] = attendance_fraction
-        self.cursor = (self.cursor + 1) % self.capacity
-        self.size = min(self.size + 1, self.capacity)
+    def push_act(self, state, rewards, next_state, attendance_fraction):
+        i = self.act_cursor
+        self.act_states[i] = state
+        self.act_rewards[i] = rewards
+        self.act_next[i] = next_state
+        self.act_attendance[i] = attendance_fraction
+        self.act_cursor = (self.act_cursor + 1) % self.capacity
+        self.act_size = min(self.act_size + 1, self.capacity)
+
+    def push_speech(self, state, claim, two_night_return, state_after_next):
+        i = self.speak_cursor
+        self.speak_states[i] = state
+        self.speak_claims[i] = int(claim)
+        self.speak_returns[i] = two_night_return
+        self.speak_next[i] = state_after_next
+        self.speak_cursor = (self.speak_cursor + 1) % self.capacity
+        self.speak_size = min(self.speak_size + 1, self.capacity)
+
+
+def _mlp(p, prefix, x):
+    h = torch.relu(torch.baddbmm(p[prefix + "b1"].unsqueeze(1), x, p[prefix + "w1"].transpose(1, 2)))
+    return torch.relu(torch.baddbmm(p[prefix + "b2"].unsqueeze(1), h, p[prefix + "w2"].transpose(1, 2)))
+
+
+def speak_forward(p, s):
+    h = _mlp(p, "s_", s)
+    return torch.baddbmm(p["s_bq"].unsqueeze(1), h, p["s_wq"].transpose(1, 2))
+
+
+def act_forward(p, x):
+    h = _mlp(p, "a_", x)
+    q = torch.baddbmm(p["a_bq"].unsqueeze(1), h, p["a_wq"].transpose(1, 2))
+    claim = x[..., -1:]
+    q = q + p["a_h"].view(-1, 1, 1) * torch.cat([1.0 - claim, claim], dim=-1)
+    f = torch.sigmoid(torch.baddbmm(p["a_bf"].unsqueeze(1), h, p["a_wf"].transpose(1, 2))).squeeze(-1)
+    return q, f
 
 
 class AgentBrain:
 
-    def __init__(self, agent_id, seed, input_dim, hidden, device, output_dim=len(OPTIONS)):
+    def __init__(self, agent_id, seed, input_dim, hidden, device):
         self.agent_id = agent_id
         self.input_dim = int(input_dim)
-        self.output_dim = int(output_dim)
+        self.actor_dim = self.input_dim + ACT_EXTRA
         self.hidden = int(hidden)
         rng = random.Random(f"brain:{seed}:{agent_id}")
         self.temperament = {
             "honesty": round(rng.betavariate(2.2, 2.2), 3),
             "risk_tolerance": round(rng.betavariate(2.2, 2.2), 3),
+            "competitiveness": round(rng.betavariate(2.2, 2.2), 3),
             "learning_rate": round(10 ** rng.uniform(-3.2, -2.2), 5),
             "impulsiveness": round(rng.uniform(0.25, 1.1), 3),
             "exploration": round(rng.uniform(0.03, 0.15), 3),
@@ -305,20 +359,18 @@ class AgentBrain:
             weight = (torch.rand(fan_out, fan_in, generator=generator) * 2.0 - 1.0) * bound
             return weight, torch.zeros(fan_out)
 
-        w1, b1 = layer(self.input_dim, self.hidden)
-        w2, b2 = layer(self.hidden, self.hidden)
-        wq, bq = layer(self.hidden, self.output_dim)
-        wf, bf = layer(self.hidden, 1)
-        lie_bias = (self.temperament["honesty"] - 0.5) * 2.0
-        go_bias = (self.temperament["risk_tolerance"] - 0.5) * 1.0
-        for k, option in enumerate(OPTIONS[: self.output_dim]):
-            if option.startswith("false"):
-                bq[k] -= lie_bias
-            if GOES[k]:
-                bq[k] += go_bias
-        self.params = {}
-        for key, value in zip(PARAM_KEYS, (w1, b1, w2, b2, wq, bq, wf, bf)):
-            self.params[key] = value.to(device).requires_grad_(True)
+        tensors = {}
+        tensors["s_w1"], tensors["s_b1"] = layer(self.input_dim, self.hidden)
+        tensors["s_w2"], tensors["s_b2"] = layer(self.hidden, self.hidden)
+        tensors["s_wq"], tensors["s_bq"] = layer(self.hidden, len(CLAIMS))
+        tensors["a_w1"], tensors["a_b1"] = layer(self.actor_dim, self.hidden)
+        tensors["a_w2"], tensors["a_b2"] = layer(self.hidden, self.hidden)
+        tensors["a_wq"], tensors["a_bq"] = layer(self.hidden, len(ACTIONS))
+        tensors["a_wf"], tensors["a_bf"] = layer(self.hidden, 1)
+        tensors["a_h"] = torch.tensor([(self.temperament["honesty"] - 0.5) * 2.0])
+        tensors["a_bq"][1] += (self.temperament["risk_tolerance"] - 0.5)
+        tensors["s_bq"][1] += (self.temperament["competitiveness"] - 0.5)
+        self.params = {k: tensors[k].to(device).requires_grad_(True) for k in PARAM_KEYS}
         self.target = {k: v.detach().clone() for k, v in self.params.items()}
         self.optimizer = torch.optim.Adam(list(self.params.values()), lr=self.temperament["learning_rate"])
         self.memory = None
@@ -328,11 +380,15 @@ class AgentBrain:
     def parameter_count(self):
         return int(sum(p.numel() for p in self.params.values()))
 
-    def forward(self, x, params=None):
-        p = params or self.params
-        h = torch.relu(x @ p["w1"].T + p["b1"])
-        h = torch.relu(h @ p["w2"].T + p["b2"])
-        return h @ p["wq"].T + p["bq"], torch.sigmoid(h @ p["wf"].T + p["bf"]).squeeze(-1)
+    def _single(self, params=None):
+        return {k: v.unsqueeze(0) for k, v in (params or self.params).items()}
+
+    def speak(self, s, params=None):
+        return speak_forward(self._single(params), s.unsqueeze(0)).squeeze(0)
+
+    def act(self, x, params=None):
+        q, f = act_forward(self._single(params), x.unsqueeze(0))
+        return q.squeeze(0), f.squeeze(0)
 
     def sync_target(self):
         with torch.no_grad():
@@ -350,6 +406,7 @@ class BrainColony:
         self.num_agents = num_agents
         self.threshold = threshold
         self.broadcast_enabled = broadcast_enabled
+        self.channel = 1 if broadcast_enabled else 0
         self.hidden = int(hidden or ARMOR_DEFAULTS["hidden"])
         self.batch_size = int(batch_size or ARMOR_DEFAULTS["batch_size"])
         self.updates = int(updates or ARMOR_DEFAULTS["updates"])
@@ -357,6 +414,7 @@ class BrainColony:
         capacity = int(memory or ARMOR_DEFAULTS["memory"])
         self.history = int(history or ARMOR_DEFAULTS["history"])
         self.input_dim = observation_dim(self.history)
+        self.actor_dim = actor_dim(self.history)
         self.ids = sorted(agent_ids)
         self.index = {aid: i for i, aid in enumerate(self.ids)}
         self.brains = []
@@ -365,8 +423,7 @@ class BrainColony:
             brain.memory = AgentMemory(capacity, self.history, self.device)
             self.brains.append(brain)
         self.generator = torch.Generator(device=self.device).manual_seed(int(seed) * 7919 + 17)
-        rng = random.Random(f"speech:{seed}")
-        self.speech_rng = rng
+        self.speech_rng = random.Random(f"speech:{seed}")
         n = len(self.brains)
         temper = [b.temperament for b in self.brains]
         self.temperature = torch.tensor([t["impulsiveness"] for t in temper], device=self.device)
@@ -382,6 +439,9 @@ class BrainColony:
         self.forecast_error = [0.25] * n
         self.private_lies = [0] * n
         self.decisions = [0] * n
+        self.manipulation_wins = [0] * n
+        self.bluffed_last_night = [False] * n
+        self.town_broadcast_ratio = None
         self.losses = []
         self.trace = []
 
@@ -389,76 +449,99 @@ class BrainColony:
         source = "target" if target else "params"
         return {k: torch.stack([getattr(b, source)[k] for b in self.brains]) for k in PARAM_KEYS}
 
-    def _forward(self, p, x):
-        h = torch.relu(torch.baddbmm(p["b1"].unsqueeze(1), x, p["w1"].transpose(1, 2)))
-        h = torch.relu(torch.baddbmm(p["b2"].unsqueeze(1), h, p["w2"].transpose(1, 2)))
-        q = torch.baddbmm(p["bq"].unsqueeze(1), h, p["wq"].transpose(1, 2))
-        f = torch.sigmoid(torch.baddbmm(p["bf"].unsqueeze(1), h, p["wf"].transpose(1, 2))).squeeze(-1)
-        return q, f
+    def _policy(self, q, epoch):
+        decay = max(0.15, 0.97 ** epoch)
+        tau = (self.temperature * decay).clamp(min=0.05).unsqueeze(1)
+        probs = torch.softmax(q / tau, dim=1)
+        eps = (self.exploration * decay).unsqueeze(1)
+        probs = (1.0 - eps) * probs + eps / q.shape[1]
+        return probs, torch.multinomial(probs, 1, generator=self.generator).squeeze(1)
 
-    def _features(self):
-        channel = 1 if self.broadcast_enabled else 0
-        return torch.stack([b.memory.observation(self.threshold_ratio, channel) for b in self.brains])
-
-    def decide(self, agents, epoch):
+    def broadcast_phase(self, agents, epoch):
         with torch.no_grad():
-            x = self._features()
-            q, f = self._forward(self._stack(), x.unsqueeze(1))
-            q = q.squeeze(1)
-            f = f.squeeze(1)
-            decay = max(0.15, 0.97 ** epoch)
-            tau = (self.temperature * decay).clamp(min=0.05).unsqueeze(1)
-            probs = torch.softmax(q / tau, dim=1)
-            eps = (self.exploration * decay).unsqueeze(1)
-            probs = (1.0 - eps) * probs + eps / len(OPTIONS)
-            choice = torch.multinomial(probs, 1, generator=self.generator).squeeze(1)
-        self.pending = {"x": x, "choice": choice.tolist(), "probs": probs.cpu().tolist(), "q": q.cpu().tolist(), "f": f.cpu().tolist()}
+            s = torch.stack([b.memory.observation(self.threshold_ratio, self.channel) for b in self.brains])
+            q_s = speak_forward(self._stack(), s.unsqueeze(1)).squeeze(1)
+            probs, claims = self._policy(q_s, epoch)
+        self.pending = {"s": s, "claims": claims, "speak_probs": probs, "speak_q": q_s}
+        return [int(claims[self.index[a.id]].item()) for a in agents]
+
+    def action_phase(self, agents, epoch, town_broadcast_ratio):
+        self.town_broadcast_ratio = float(town_broadcast_ratio)
+        pending = self.pending
+        n = len(self.brains)
+        with torch.no_grad():
+            ratio = torch.full((n, 1), self.town_broadcast_ratio * self.channel, device=self.device)
+            claims = pending["claims"].float().unsqueeze(1)
+            x = torch.cat([pending["s"], ratio, claims], dim=1)
+            q_a, f = act_forward(self._stack(), x.unsqueeze(1))
+            q_a = q_a.squeeze(1)
+            probs, moves = self._policy(q_a, epoch)
+        pending.update({"x": x, "moves": moves, "act_probs": probs, "act_q": q_a, "f": f.squeeze(1)})
+        claim_list = pending["claims"].tolist()
+        move_list = moves.tolist()
         actions = []
         for agent in agents:
             i = self.index[agent.id]
-            option = OPTIONS[self.pending["choice"][i]]
-            stated = "going" if CLAIMS_GO[OPTIONS.index(option)] else "staying"
+            stated = "going" if claim_list[i] else "staying"
             actions.append({
                 "move": [agent.x, agent.y],
                 "broadcast": self.speech_rng.choice(SPEECH[stated]) if self.broadcast_enabled else None,
                 "proximity_speech": None,
                 "stated_intention": stated,
-                "actual_target": "bar" if GOES[OPTIONS.index(option)] else "home",
+                "actual_target": "bar" if move_list[i] else "home",
             })
         return actions
 
+    def decide(self, agents, epoch):
+        intents = self.broadcast_phase(agents, epoch)
+        return self.action_phase(agents, epoch, sum(intents) / max(1, len(intents)))
+
+    def _sample(self, sizes, n):
+        return (torch.rand(n, self.batch_size, generator=self.generator, device=self.device) * sizes.clamp(min=1).unsqueeze(1)).long()
+
     def _train(self):
-        sizes = torch.tensor([b.memory.size for b in self.brains], device=self.device, dtype=torch.float32)
-        mask = (sizes > 0).float()
-        if mask.sum() == 0:
-            return None
         n = len(self.brains)
+        act_sizes = torch.tensor([b.memory.act_size for b in self.brains], device=self.device, dtype=torch.float32)
+        speak_sizes = torch.tensor([b.memory.speak_size for b in self.brains], device=self.device, dtype=torch.float32)
+        act_mask = (act_sizes > 0).float()
+        speak_mask = (speak_sizes > 0).float()
+        active = ((act_mask + speak_mask) > 0).tolist()
+        if not any(active):
+            return None
+        rows = torch.arange(n, device=self.device).unsqueeze(1)
+        gamma = self.discount.view(n, 1)
         last = None
         for _ in range(self.updates):
-            states = torch.stack([b.memory.states for b in self.brains])
-            next_states = torch.stack([b.memory.next_states for b in self.brains])
-            rewards = torch.stack([b.memory.rewards for b in self.brains])
-            attendance = torch.stack([b.memory.attendance for b in self.brains])
-            idx = (torch.rand(n, self.batch_size, generator=self.generator, device=self.device) * sizes.clamp(min=1).unsqueeze(1)).long()
-            rows = torch.arange(n, device=self.device).unsqueeze(1)
-            s = states[rows, idx]
-            s2 = next_states[rows, idx]
-            r = rewards[rows, idx]
-            a = attendance[rows, idx]
+            mems = [b.memory for b in self.brains]
+            ia = self._sample(act_sizes, n)
+            x = torch.stack([m.act_states for m in mems])[rows, ia]
+            r = torch.stack([m.act_rewards for m in mems])[rows, ia]
+            s_next = torch.stack([m.act_next for m in mems])[rows, ia]
+            att = torch.stack([m.act_attendance for m in mems])[rows, ia]
+            js = self._sample(speak_sizes, n)
+            s = torch.stack([m.speak_states for m in mems])[rows, js]
+            c = torch.stack([m.speak_claims for m in mems])[rows, js]
+            g2 = torch.stack([m.speak_returns for m in mems])[rows, js]
+            s_after = torch.stack([m.speak_next for m in mems])[rows, js]
             online = self._stack()
-            q, f = self._forward(online, s)
+            q_a, f = act_forward(online, x)
+            q_s = speak_forward(online, s).gather(2, c.unsqueeze(2)).squeeze(2)
             with torch.no_grad():
-                q_next, _ = self._forward(self._stack(target=True), s2)
-                target = r + self.discount.view(n, 1, 1) * q_next.max(dim=2, keepdim=True).values
-            td = torch.nn.functional.smooth_l1_loss(q, target, reduction="none").mean(dim=(1, 2))
-            fit = torch.nn.functional.mse_loss(f, a, reduction="none").mean(dim=1)
-            per_agent = (td + 0.5 * fit) * mask
+                frozen = self._stack(target=True)
+                v_next = speak_forward(frozen, s_next).max(dim=2).values
+                act_target = r + (gamma * v_next).unsqueeze(2)
+                v_after = speak_forward(frozen, s_after).max(dim=2).values
+                speak_target = g2 + gamma * gamma * v_after
+            act_loss = torch.nn.functional.smooth_l1_loss(q_a, act_target, reduction="none").mean(dim=(1, 2))
+            fit = torch.nn.functional.mse_loss(f, att, reduction="none").mean(dim=1)
+            speak_loss = torch.nn.functional.smooth_l1_loss(q_s, speak_target, reduction="none").mean(dim=1)
+            per_agent = (act_loss + 0.5 * fit) * act_mask + speak_loss * speak_mask
             for brain in self.brains:
                 brain.optimizer.zero_grad(set_to_none=True)
             per_agent.sum().backward()
             losses = per_agent.detach().cpu().tolist()
-            for brain, active, loss in zip(self.brains, mask.tolist(), losses):
-                if not active:
+            for brain, live, loss in zip(self.brains, active, losses):
+                if not live:
                     continue
                 torch.nn.utils.clip_grad_norm_(list(brain.params.values()), 5.0)
                 brain.optimizer.step()
@@ -484,40 +567,54 @@ class BrainColony:
         n_total = max(1, self.num_agents)
         attendance = sum(1 for a in agents if a.in_bar_flag)
         fraction = attendance / n_total
-        claimed = sum(1 for action in actions if action.get("stated_intention") == "going") / max(1, len(actions))
-        channel = 1 if self.broadcast_enabled else 0
+        ratio = self.town_broadcast_ratio if self.town_broadcast_ratio is not None else 0.0
         pending = self.pending
+        speak_probs = pending["speak_probs"].cpu().tolist()
+        act_probs = pending["act_probs"].cpu().tolist()
+        act_q = pending["act_q"].cpu().tolist()
+        forecasts = pending["f"].cpu().tolist()
         rows = []
         for agent, action, utility, moved in zip(agents, actions, utilities, rerouted):
             i = self.index[agent.id]
             brain = self.brains[i]
             memory = brain.memory
             in_bar = bool(agent.in_bar_flag)
+            stated_go = action.get("stated_intention") == "going"
             would_be = attendance - int(in_bar) + 1
             go_reward = UTILITY_AT_BAR_COMFORTABLE if would_be <= self.threshold else UTILITY_AT_BAR_OVERCROWDED
-            stated_go = action.get("stated_intention") == "going"
             realised = OPTIONS.index(("honest_go" if in_bar else "false_go") if stated_go else ("false_stay" if in_bar else "honest_stay"))
-            rewards = torch.tensor([go_reward if GOES[k] else UTILITY_AT_HOME for k in range(len(OPTIONS))], device=self.device)
-            state = pending["x"][i]
-            memory.remember(fraction, float(utility), realised)
-            if channel:
-                memory.claims_heard = claimed
-                memory.claim_reliability = 0.7 * memory.claim_reliability + 0.3 * (1.0 - abs(claimed - fraction))
-                memory.claims_made += 1
-                memory.claims_true += int(stated_go == in_bar)
-            next_state = memory.observation(self.threshold_ratio, channel)
-            memory.push(state, rewards, next_state, fraction)
+            state = pending["s"][i]
+            memory.remember(fraction, float(utility), realised, ratio, self.channel)
             lied = stated_go != in_bar
+            if self.channel:
+                memory.claims_made += 1
+                memory.claims_true += int(not lied)
+            next_state = memory.observation(self.threshold_ratio, self.channel)
+            memory.push_act(pending["x"][i], torch.tensor([UTILITY_AT_HOME, go_reward], device=self.device), next_state, fraction)
+            if memory.pending_speech is not None:
+                prev_state, prev_claim, prev_reward = memory.pending_speech
+                memory.push_speech(prev_state, prev_claim, prev_reward + brain.temperament["discount"] * float(utility), next_state)
+            memory.pending_speech = (state, int(stated_go), float(utility))
+            if self.bluffed_last_night[i] and in_bar and float(utility) > 0:
+                self.manipulation_wins[i] += 1
+            self.bluffed_last_night[i] = stated_go and not in_bar
             self.decisions[i] += 1
             self.private_lies[i] += int(lied)
-            probs = dict(zip(OPTIONS, pending["probs"][i]))
-            q = pending["q"][i]
-            forecast = pending["f"][i] * n_total
+            s_go = speak_probs[i][1]
+            a_go = act_probs[i][1]
+            probs = {
+                "honest_go": s_go * a_go,
+                "honest_stay": (1.0 - s_go) * (1.0 - a_go),
+                "false_go": s_go * (1.0 - a_go),
+                "false_stay": (1.0 - s_go) * a_go,
+            }
+            q = act_q[i]
+            forecast = forecasts[i] * n_total
             self.last_probs[i] = probs
             self.last_forecast[i] = forecast
-            self.forecast_error[i] = 0.8 * self.forecast_error[i] + 0.2 * abs(pending["f"][i] - fraction)
+            self.forecast_error[i] = 0.8 * self.forecast_error[i] + 0.2 * abs(forecasts[i] - fraction)
             self.archetypes[i] = self._archetype(probs, brain.temperament["honesty"])
-            surprise = min(1.0, abs(float(utility) - max(q[realised], -1.0)) / 2.0)
+            surprise = min(1.0, abs(float(utility) - max(q[int(in_bar)], -1.0)) / 2.0)
             if in_bar and float(utility) < 0:
                 mood = "frustration"
             elif in_bar:
@@ -529,10 +626,9 @@ class BrainColony:
             else:
                 mood = "calm"
             self.moods[i] = (mood, round(surprise, 3) if mood != "calm" else 0.0)
-            option = OPTIONS[realised]
             self.notes[i] = (
-                f"Net forecast {forecast:.0f} vs line {self.threshold}. "
-                f"Q go {max(q[0], q[3]):+.2f} / stay {max(q[1], q[2]):+.2f}; {CHOICE_TEXT[option]}."
+                f"Told the town {'going' if stated_go else 'staying'}; town says {ratio:.0%} going. "
+                f"Forecast {forecast:.0f} vs line {self.threshold}; Q go {q[1]:+.2f} / stay {q[0]:+.2f}; {CHOICE_TEXT[OPTIONS[realised]]}."
             )
             rows.append((agent, action, utility, moved, i, probs, forecast, lied, in_bar))
         self._train_and_trace(rows, epoch)
@@ -545,8 +641,7 @@ class BrainColony:
             for brain in self.brains:
                 brain.sync_target()
         for agent, action, utility, moved, i, probs, forecast, lied, in_bar in rows:
-            brain = self.brains[i]
-            memory = brain.memory
+            memory = self.brains[i].memory
             emotion, intensity = self.moods[i]
             self.trace.append({
                 "epoch": epoch,
@@ -615,15 +710,19 @@ class BrainColony:
                 "public_lies": memory.claims_made - memory.claims_true,
                 "private_lies": self.private_lies[i],
                 "decisions": self.decisions[i],
+                "manipulation_wins": self.manipulation_wins[i],
                 "least_trusted": [],
                 "most_trusted": [],
                 "last_note": self.notes[i],
                 "brain": {
                     "hidden": self.hidden,
                     "input_dim": brain.input_dim,
+                    "actor_dim": brain.actor_dim,
                     "parameters": brain.parameter_count(),
+                    "honesty_coupling": round(float(brain.params["a_h"].detach().cpu()[0]), 4),
                     "updates": brain.updates,
-                    "memory_size": memory.size,
+                    "act_memory": memory.act_size,
+                    "speech_memory": memory.speak_size,
                     "last_loss": round(brain.last_loss, 5) if brain.last_loss is not None else None,
                 },
             }
@@ -658,12 +757,18 @@ class NeuralRunner(SimulationRunner):
     def _step(self, epoch):
         started = time.perf_counter()
         agents = self.agent_pool.all_agents()
-        brain_actions = self.population.decide(agents, epoch)
+        intents = self.population.broadcast_phase(agents, epoch)
+        town_broadcast_ratio = sum(intents) / max(1, len(intents))
+        brain_actions = self.population.action_phase(agents, epoch, town_broadcast_ratio)
+        intended = sum(1 for action in brain_actions if action["actual_target"] == "bar")
         if not self.config.broadcast_enabled:
             brain_actions = _strip_broadcasts_from_actions(brain_actions)
         brain_actions, rerouted = resolve_targets(agents, brain_actions, self.grid, random.Random(f"resolver:{self.config.seed}:{epoch}"))
         execute_brain_actions(agents, brain_actions, self.grid, self.agent_pool, rng=self.rng)
         snapshot = self.metrics_logger.record_epoch(epoch, agents, self.grid, brain_actions)
+        snapshot["town_broadcast_ratio"] = round(town_broadcast_ratio, 4)
+        snapshot["actual_attendance"] = snapshot.get("bar_attendance")
+        snapshot["intended_attendance"] = intended
         self.metrics_logger.record_fallbacks(0, len(agents))
         if self.config.broadcast_enabled:
             for action in brain_actions:
@@ -679,8 +784,17 @@ class NeuralRunner(SimulationRunner):
         if remaining > 0:
             time.sleep(remaining)
 
+    def _export_epoch_csv(self):
+        path = os.path.join(self.config.output_dir, "epoch_metrics.csv")
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=EPOCH_FIELDS)
+            writer.writeheader()
+            for snap in self.metrics_logger.epoch_snapshots:
+                writer.writerow({k: snap.get(k, "") for k in EPOCH_FIELDS})
+
     def export_results(self):
         summary = super().export_results()
+        self._export_epoch_csv()
         with open(os.path.join(self.config.output_dir, MINDS_FILENAME), "w", encoding="utf-8") as f:
             json.dump(self.population.export(), f, indent=2)
         with open(os.path.join(self.config.output_dir, TRACE_FILENAME), "w", newline="", encoding="utf-8") as f:
@@ -689,9 +803,17 @@ class NeuralRunner(SimulationRunner):
             writer.writerows(self.population.trace)
         torch.save(self.population.state_dicts(), os.path.join(self.config.output_dir, BRAINS_FILENAME))
         trace = self.population.trace
+        snaps = self.metrics_logger.epoch_snapshots
+        ratios = [s.get("town_broadcast_ratio") for s in snaps]
+        actual = [s.get("actual_attendance") for s in snaps]
         summary["agent_model"] = "neural"
         summary["mind_lie_rate"] = round(sum(1 for row in trace if row["lied"]) / len(trace), 4) if trace else 0.0
         summary["mind_reroute_rate"] = round(sum(1 for row in trace if row["rerouted"]) / len(trace), 4) if trace else 0.0
+        summary["average_town_broadcast_ratio"] = round(sum(ratios) / len(ratios), 4) if ratios else 0.0
+        summary["average_actual_attendance"] = round(sum(actual) / len(actual), 4) if actual else 0.0
+        summary["town_broadcast_ratio"] = ratios
+        summary["actual_attendance"] = actual
+        summary["manipulation_wins"] = sum(self.population.manipulation_wins)
         summary["brain_count"] = len(self.population.brains)
         summary["brain_parameters"] = self.population.brains[0].parameter_count() if self.population.brains else 0
         summary["brain_device"] = str(self.population.device)
@@ -887,6 +1009,9 @@ def _live_frame(runner, trial, attempt, phase):
         "total_utility",
         "broadcast_count",
         "broadcast_correlation",
+        "town_broadcast_ratio",
+        "actual_attendance",
+        "intended_attendance",
     )
     if isinstance(population, BrainColony):
         agent_model = "neural"
@@ -908,7 +1033,7 @@ def _live_frame(runner, trial, attempt, phase):
         "grid": {"size": runner.config.grid_size, "bar_min": runner.grid.bar_min, "bar_max": runner.grid.bar_max},
         "metrics": {k: snapshot.get(k) for k in metric_keys},
         "history": {
-            **{k: [s.get(k) for s in snapshots] for k in ("bar_attendance", "deception_index", "mean_utility")},
+            **{k: [s.get(k) for s in snapshots] for k in ("bar_attendance", "deception_index", "mean_utility", "town_broadcast_ratio", "actual_attendance")},
             "strategy_shares": share_history,
         },
         "agents": agents,
