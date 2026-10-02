@@ -29,6 +29,7 @@ import World from "./scene/World";
 import { createMotion } from "./scene/People";
 import type { CrowdState } from "./scene/Tavern";
 import { RECOMMENDED, sanitizeConfig, type LaunchConfig } from "./setup";
+import { HOSTED } from "./env";
 import { usePolledJson, useReplay } from "./telemetry";
 import type { AnalyticsReport, ComparisonRow, LiveState } from "./types";
 
@@ -136,7 +137,7 @@ export default function App() {
       return;
     }
   }, []);
-  const [setupOpen, setSetupOpen] = useState(true);
+  const [setupOpen, setSetupOpen] = useState(!HOSTED);
   useEffect(() => {
     if (running) setSetupOpen(false);
   }, [running]);
@@ -378,7 +379,7 @@ export default function App() {
   const calibration = useMemo(() => {
     const agents = liveState?.sweep.num_agents ?? report.data?.trials[0]?.agents ?? null;
     if (!agents || !comparison.data) return null;
-    const rows = comparison.data.filter((r) => (r.runtime?.engine_build_s ?? 0) > 0 && r.epoch_timings_mean_s);
+    const rows = comparison.data.filter((r) => r.runtime?.profile?.hidden != null && (r.runtime.engine_build_s ?? 0) > 0 && r.epoch_timings_mean_s);
     if (!rows.length) return null;
     return rows.reduce((acc, r) => acc + (r.epoch_timings_mean_s as number), 0) / rows.length / agents;
   }, [comparison.data, liveState, report.data]);

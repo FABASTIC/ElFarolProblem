@@ -7,6 +7,7 @@ export interface RuntimeProfile {
   max_num_seqs?: number;
   max_num_batched_tokens?: number;
   kv_cache_dtype?: string;
+  hidden?: number;
 }
 
 export interface RuntimeTelemetry {

@@ -1,4 +1,5 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
+import { HOSTED, REPO_URL } from "../env";
 import { fmtDuration } from "../format";
 import type { Launcher } from "../launcher";
 import {
@@ -349,7 +350,18 @@ export default function SetupPanel({ draft, onDraft, launcher, calibration, canC
         ))}
       </ul>
 
-      {offline ? (
+      {HOSTED ? (
+        <div className="setup__offline" role="status">
+          <p>
+            This is a hosted replay of a finished sweep. New towns train on a local CUDA GPU: clone{" "}
+            <a href={REPO_URL} target="_blank" rel="noreferrer">
+              the repository
+            </a>
+            , start the dashboard with <code>npm run dev</code>, or run:
+          </p>
+          <code className="setup__command">{command}</code>
+        </div>
+      ) : offline ? (
         <div className="setup__offline" role="status">
           <p>The launcher is offline (open this page through <code>npm run dev</code>). Start the run from a terminal instead:</p>
           <code className="setup__command">{command}</code>
