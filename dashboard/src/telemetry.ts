@@ -30,7 +30,10 @@ export function usePolledJson<T>(path: string, intervalMs: number): Polled<T> {
       try {
         const response = await fetch(`/data/${path}?optional=1`, { cache: "no-store", signal: controller.signal });
         if (response.status === 204 || response.status === 404) {
-          if (!cancelled) setSnapshot((prev) => ({ ...prev, state: prev.data ? "live" : "missing", error: null }));
+          if (!cancelled) {
+            lastText.current = null;
+            setSnapshot({ data: null, state: "missing", receivedAt: null, error: null });
+          }
         } else if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         } else {

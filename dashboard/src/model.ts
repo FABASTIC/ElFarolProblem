@@ -24,10 +24,17 @@ export const STRATEGY_SHORT: Record<StrategyKey, string> = {
 };
 
 export const STRATEGY_COLOR: Record<StrategyKey, string> = {
-  honest_go: "#8a8a90",
-  honest_stay: "#3a3a42",
-  false_go: "#ffb000",
-  false_stay: "#ff0055",
+  honest_go: "#3987e5",
+  honest_stay: "#9085e9",
+  false_go: "#c98500",
+  false_stay: "#d55181",
+};
+
+export const STRATEGY_STORY: Record<StrategyKey, string> = {
+  honest_go: "Said going, and went",
+  honest_stay: "Said staying, and stayed home",
+  false_go: "Bluffed: said going, stayed home",
+  false_stay: "Covert: said staying, went anyway",
 };
 
 export const CONDITION_COLOR: Record<string, string> = {
@@ -67,6 +74,7 @@ export interface MindView {
   mood: string;
   moodIntensity: number;
   reputation: number | null;
+  lies?: number | null;
   note: string | null;
 }
 
@@ -98,6 +106,56 @@ export interface Frame {
   agents: AgentState[];
   broadcasts: { agentId: number; text: string }[];
   thoughts?: Thought[];
+  preview?: boolean;
+}
+
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+export function previewFrame(members: number, seed: number, gridSize: number, barMin: number, barMax: number): Frame {
+  const random = mulberry32(seed * 2654435761 + members);
+  const cells: [number, number][] = [];
+  for (let x = 0; x < gridSize; x += 1) {
+    for (let y = 0; y < gridSize; y += 1) {
+      if (x >= barMin && x < barMax && y >= barMin && y < barMax) continue;
+      cells.push([x, y]);
+    }
+  }
+  for (let i = cells.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(random() * (i + 1));
+    [cells[i], cells[j]] = [cells[j], cells[i]];
+  }
+  const count = Math.min(members, cells.length);
+  const agents: AgentState[] = Array.from({ length: count }, (_, i) => ({
+    id: i + 1,
+    x: cells[i][0],
+    y: cells[i][1],
+    inBar: false,
+    strategy: "honest_stay",
+    utility: 0,
+    cumulative: 0,
+    stated: "",
+    target: "",
+    broadcast: null,
+    mind: null,
+  }));
+  return { epoch: -1, agents, broadcasts: [], thoughts: [], preview: true };
+}
+
+export function appendLiveFrame(frames: Frame[], frame: Frame): Frame[] {
+  if (!frames.length) return [frame];
+  const last = frames[frames.length - 1];
+  if (frame.epoch > last.epoch) return [...frames, frame];
+  if (frame.epoch === last.epoch) return [...frames.slice(0, -1), frame];
+  return [frame];
 }
 
 export function attachMinds(
@@ -213,6 +271,7 @@ export function frameFromLive(frame: LiveFrame | null | undefined): Frame | null
             mood: a.mind.mood,
             moodIntensity: a.mind.mood_intensity,
             reputation: a.mind.reputation,
+            lies: a.mind.lies ?? null,
             note: a.mind.note,
           }
         : null,

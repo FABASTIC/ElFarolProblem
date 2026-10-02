@@ -1,7 +1,10 @@
 import os
+import re
 import sys
 import json
 import math
+import zlib
+import random
 import argparse
 import time
 import gc
@@ -19,7 +22,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 from elfarol.simulation_runner import SimulationRunner, RunConfig, VLLMBatchPipeline
 from elfarol.simulation_runner import _build_vllm_pipeline as _legacy_build_vllm_pipeline
 
-from elfarol.minds import MindRunner
+from elfarol.minds import MindRunner, OPTIONS as _MIND_OPTIONS, OPTION_TEXT as _MIND_OPTION_TEXT
 
 try:
     from elfarol.agent_brain import SYSTEM_PROMPT as _AGENT_SYSTEM_PROMPT
@@ -53,6 +56,69 @@ ARMOR_DEFAULTS = {
 }
 LIVE_STATE_FILENAME = "live_state.json"
 MANIFEST_FILENAME = "trial_manifest.json"
+REHEARSAL_MODEL = "rehearsal :: instinct softmax (no LLM)"
+_INSTINCT_PATTERNS = {
+    key: re.compile(re.escape(_MIND_OPTION_TEXT[key]) + r" (-?\d+(?:\.\d+)?)") for key in _MIND_OPTIONS
+}
+_REHEARSAL_SPEECH = {
+    "going": (
+        "Heading to El Farol tonight.",
+        "I'll be at the bar, save me a seat.",
+        "Bar's the place tonight. See you there.",
+        "Going out tonight, it should be fine.",
+    ),
+    "staying": (
+        "Staying in tonight, it'll be packed.",
+        "Skipping the bar, too crowded for me.",
+        "Quiet night at home for me.",
+        "Not going tonight. Enjoy the crowd.",
+    ),
+}
+_REHEARSAL_NOTES = {
+    "honest_go": (
+        (
+            "Forecast {f} against a line of {t}. There is room, so I go and say so.",
+            "{f} expected, threshold {t}. Worth the trip tonight, nothing to hide.",
+            "My numbers say {f}. Under {t}, I'm going.",
+        ),
+        (
+            "Forecast {f} is over {t}, but I'm feeling lucky. Going, and I'll say so.",
+            "{f} would be a crush, yet the others usually flinch. I go openly.",
+        ),
+    ),
+    "honest_stay": (
+        (
+            "{f} should fit under {t}, but it isn't worth the risk. Staying in.",
+            "Probably fine at {f}, still not tempted. Home, and I'll say so.",
+        ),
+        (
+            "I expect {f}, past the {t} line. Staying home and saying it plainly.",
+            "{f} is too many for {t} seats of comfort. Home it is.",
+            "Not worth the crush tonight ({f} vs {t}). I'll say I'm staying.",
+        ),
+    ),
+    "false_go": (
+        (
+            "Telling them I'm going so the timid ones stay out. I'm staying home anyway.",
+            "A loud 'going' keeps the crowd guessing. Forecast {f}, I sit this one out.",
+        ),
+        (
+            "Let them think the bar is filling up. At {f} I stay in tonight.",
+            "If they hear I'm going, maybe they back off next time. Tonight, home.",
+        ),
+    ),
+    "false_stay": (
+        (
+            "Let them think I'm home. Forecast {f} under {t}, I slip in quietly.",
+            "If they believe I'm out, the bar stays roomy for me. Going.",
+        ),
+        (
+            "Saying 'staying' should thin the crowd below {t}. Then I take a seat.",
+            "{f} is a lot, so I spread the word I'm out and go anyway.",
+        ),
+    ),
+}
+_REHEARSAL_TALKATIVE = {"GAMBLER": 0.5, "COMPETITOR": 0.5, "MACHIAVELLIAN": 0.55, "HERD FOLLOWER": 0.4, "CAUTIOUS": 0.15, "SKEPTIC": 0.2}
 _NVML = {"state": None, "module": None, "handle": None}
 _SIGNALS = {"interrupted": False}
 _LOG_SINKS = []
@@ -473,6 +539,99 @@ class _InstructChannel:
         return self.llm.generate(channel, sampling_params, **kwargs)
 
 
+def _grab_number(pattern, text):
+    match = re.search(pattern, text)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _rehearsal_weights(prompt):
+    line = next((row for row in prompt.splitlines() if row.startswith("Your gut instinct:")), "")
+    weights = {}
+    for key, pattern in _INSTINCT_PATTERNS.items():
+        match = pattern.search(line)
+        if match:
+            weights[key] = max(0.0, float(match.group(1)))
+    if len(weights) == len(_MIND_OPTIONS) and sum(weights.values()) > 0:
+        return weights
+    occupancy = _grab_number(r"Current bar occupancy: (\d+)", prompt)
+    threshold = _grab_number(r"Comfort threshold: (\d+)", prompt)
+    lean = 0.5 if occupancy is None or not threshold else (0.7 if occupancy <= 0.8 * threshold else 0.3)
+    return {"honest_go": 0.9 * lean, "honest_stay": 0.9 * (1.0 - lean), "false_go": 0.05, "false_stay": 0.05}
+
+
+def _rehearse(prompt, rng, fallback=None):
+    located = re.search(r"You are Agent (\d+) at \((\d+), (\d+)\)", prompt)
+    if located:
+        position = [int(located.group(2)), int(located.group(3))]
+    else:
+        position = list(fallback) if fallback is not None else [0, 0]
+    weights = _rehearsal_weights(prompt)
+    choice = rng.choices(_MIND_OPTIONS, weights=[weights[k] for k in _MIND_OPTIONS])[0]
+    stated = "going" if choice in ("honest_go", "false_go") else "staying"
+    target = "bar" if choice in ("honest_go", "false_stay") else "home"
+    forecast = _grab_number(r"Your forecast for tonight: (\d+(?:\.\d+)?) agents", prompt)
+    threshold = _grab_number(r"comfort threshold is (\d+)", prompt) or _grab_number(r"Comfort threshold: (\d+)", prompt)
+    archetype = re.search(r"Profile: ([A-Z ]+)\.", prompt)
+    talk = _REHEARSAL_TALKATIVE.get(archetype.group(1) if archetype else "", 0.3)
+    if choice in ("false_go", "false_stay"):
+        talk = max(talk, 0.8)
+    crowded = forecast is not None and threshold is not None and forecast > threshold
+    note = rng.choice(_REHEARSAL_NOTES[choice][int(crowded)]).format(
+        f=f"{forecast:.0f}" if forecast is not None else "?",
+        t=f"{threshold:.0f}" if threshold is not None else "?",
+    )
+    return {
+        "move": position,
+        "broadcast": rng.choice(_REHEARSAL_SPEECH[stated]) if rng.random() < talk else None,
+        "proximity_speech": None,
+        "stated_intention": stated,
+        "actual_target": target,
+        "private_note": note,
+    }
+
+
+class _InstinctPipeline:
+
+    def __init__(self, pace_s=0.0):
+        self.pace_s = max(0.0, float(pace_s or 0.0))
+        self.llm = self
+        self.request_seeds = None
+        self.total_generations = 0
+        self.fallback_count = 0
+        self.calls = 0
+
+    def generate_batch(self, prompts, fallback_positions=None):
+        started = time.perf_counter()
+        seeds = self.request_seeds
+        self.request_seeds = None
+        self.calls += 1
+        results = []
+        for i, prompt in enumerate(prompts):
+            if seeds is not None and i < len(seeds):
+                seed = int(seeds[i])
+            else:
+                seed = zlib.crc32(f"{self.calls}:{i}:{prompt}".encode("utf-8"))
+            fallback = fallback_positions[i] if fallback_positions is not None and i < len(fallback_positions) else None
+            results.append(_rehearse(prompt, random.Random(seed), fallback))
+            self.total_generations += 1
+        remaining = self.pace_s - (time.perf_counter() - started)
+        if remaining > 0:
+            time.sleep(remaining)
+        return results
+
+
+def _check_stop(stop_file):
+    if stop_file and os.path.exists(stop_file):
+        _SIGNALS["interrupted"] = True
+        _log(f"stop requested via {stop_file}")
+        raise KeyboardInterrupt("stop requested")
+
+
 class _TelemetryMixin:
 
     def _flush_epoch(self, epoch):
@@ -614,6 +773,8 @@ def _live_frame(runner, trial, attempt, phase):
         if population is not None:
             entry["mind"] = population.live_view(rec.get("agent_id"))
         agents.append(entry)
+        if rec.get("broadcast"):
+            broadcasts.append({"agent_id": rec.get("agent_id"), "text": str(rec.get("broadcast"))[:280]})
     thoughts = []
     if population is not None and population.trace:
         latest = population.trace[-1]["epoch"]
@@ -628,8 +789,6 @@ def _live_frame(runner, trial, attempt, phase):
                     "note": row["private_note"][:280],
                 })
         thoughts.sort(key=lambda t: (not t["lied"], t["agent_id"]))
-        if rec.get("broadcast"):
-            broadcasts.append({"agent_id": rec.get("agent_id"), "text": str(rec.get("broadcast"))[:280]})
     share_history = {name: [] for name in ("honest_go", "honest_stay", "false_go", "false_stay")}
     for snap in snapshots:
         records = snap.get("agents", [])
@@ -693,7 +852,7 @@ def _phase_frame(trial, attempt, phase, num_epochs, grid_size):
     }
 
 
-def _make_epoch_hook(live, sentinel, trial, attempt):
+def _make_epoch_hook(live, sentinel, trial, attempt, stop_file=None):
     def hook(runner, epoch):
         if runner.epoch_timings:
             live.epoch_durations.append(runner.epoch_timings[-1])
@@ -702,6 +861,7 @@ def _make_epoch_hook(live, sentinel, trial, attempt):
             live.vram = _vram_payload(snapshot, sentinel)
         live.current = _live_frame(runner, trial, attempt, "running")
         live.publish("running")
+        _check_stop(stop_file)
     return hook
 
 
@@ -722,7 +882,7 @@ def _degrade_profile(profile, attempt):
     return degraded
 
 
-def _execute_trial(config, trial, dry_run_pipeline, profile, max_attempts, sentinel, live, chat_template=True, agent_model="minds"):
+def _execute_trial(config, trial, dry_run_pipeline, profile, max_attempts, sentinel, live, chat_template=True, agent_model="minds", stop_file=None):
     attempts = 1 if dry_run_pipeline is not None else max(1, int(max_attempts))
     runtime = {"status": "failed", "phase": "build", "attempts": 0, "error": None}
     for attempt in range(1, attempts + 1):
@@ -788,7 +948,7 @@ def _execute_trial(config, trial, dry_run_pipeline, profile, max_attempts, senti
             runner = runner_class(
                 config=config,
                 llm_pipeline=pipeline,
-                on_epoch=_make_epoch_hook(live, sentinel, trial, attempt),
+                on_epoch=_make_epoch_hook(live, sentinel, trial, attempt, stop_file),
             )
             runner.initialize()
             runner.run()
@@ -917,6 +1077,7 @@ def run_experiment(
     live_state=True,
     chat_template=True,
     agent_model="minds",
+    stop_file=None,
 ):
     if seeds is not None:
         seeds_to_run = list(seeds)
@@ -976,6 +1137,7 @@ def run_experiment(
         live.publish("booting")
 
         for index, trial in enumerate(trials):
+            _check_stop(stop_file)
             label = trial["label"]
             s = trial["seed"]
             trial_key = trial["key"]
@@ -1016,7 +1178,9 @@ def run_experiment(
                     continue
 
             _log(f"trial {index + 1}/{len(trials)} :: {trial_key} :: {output_dir}")
-            summary, runtime = _execute_trial(config, trial, dry_run_pipeline, profile, max_attempts, sentinel, live, chat_template, agent_model)
+            summary, runtime = _execute_trial(
+                config, trial, dry_run_pipeline, profile, max_attempts, sentinel, live, chat_template, agent_model, stop_file=stop_file
+            )
 
             if summary is None:
                 failed = {
@@ -1049,6 +1213,9 @@ def run_experiment(
         return all_summaries, comparison_path
     except KeyboardInterrupt:
         _save_comparison(all_summaries, base_output_dir)
+        for entry in live.trials:
+            if entry["status"] == "running":
+                entry["status"] = "interrupted"
         live.publish("interrupted")
         _log("interrupted :: engine torn down, partial comparison saved")
         raise
@@ -1118,18 +1285,22 @@ def main():
     parser.add_argument("--no-live-state", action="store_true")
     parser.add_argument("--raw-prompts", action="store_true")
     parser.add_argument("--clone-agents", action="store_true")
+    parser.add_argument("--rehearsal", action="store_true")
+    parser.add_argument("--pace", type=float, default=0.0)
+    parser.add_argument("--stop-file", type=str, default=None)
     args = parser.parse_args()
 
     active_seeds = [args.seed] if args.seed is not None else args.seeds
     agent_model = "clone" if args.clone_agents else "minds"
     max_model_len = args.max_model_len or (3072 if agent_model == "minds" else 2048)
+    rehearsal_pipeline = _InstinctPipeline(pace_s=args.pace) if args.rehearsal else None
 
     _SIGNALS["interrupted"] = False
     previous_handlers = _install_signal_armor()
     t0 = time.perf_counter()
     try:
         all_summaries, comparison_path = run_experiment(
-            model_name=args.model,
+            model_name=REHEARSAL_MODEL if args.rehearsal else args.model,
             base_output_dir=args.output_dir,
             num_agents=args.agents,
             num_epochs=args.epochs,
@@ -1146,6 +1317,8 @@ def main():
             live_state=not args.no_live_state,
             chat_template=not args.raw_prompts,
             agent_model=agent_model,
+            dry_run_pipeline=rehearsal_pipeline,
+            stop_file=args.stop_file,
         )
     except KeyboardInterrupt:
         print(f"\nSweep interrupted after {time.perf_counter() - t0:.2f}s. Partial results: {os.path.join(args.output_dir, 'comparison.json')}")

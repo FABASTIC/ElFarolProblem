@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { simLauncher } from "./sim-launcher";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -76,7 +77,7 @@ export default defineConfig(() => {
     ? path.resolve(process.env.ELFAROL_DATA_DIR)
     : path.resolve(here, "../outputs/experiment");
   return {
-    plugins: [react(), experimentData(dataDir)],
+    plugins: [react(), experimentData(dataDir), simLauncher({ repoRoot: path.resolve(here, ".."), dataDir })],
     server: { port: 5173 },
     preview: { port: 4173 },
     build: { target: "es2022", chunkSizeWarningLimit: 1800 },
