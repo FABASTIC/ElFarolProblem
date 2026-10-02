@@ -1,5 +1,7 @@
-import { useLayoutEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
+import { createEdgeMaterial } from "./edgeMaterial";
+import { houseGeometry, postGeometry, treeGeometry } from "./facets";
 
 interface GroundProps {
   gridSize: number;
@@ -11,14 +13,12 @@ export const BORDER = 8;
 export const LIGHTHOUSE_OFFSET = 3.4;
 
 const TILE = new THREE.PlaneGeometry(0.94, 0.94).rotateX(-Math.PI / 2);
-const FOLIAGE = new THREE.ConeGeometry(0.62, 1.5, 7).translate(0, 1.05, 0);
-const TRUNK = new THREE.CylinderGeometry(0.07, 0.09, 0.4, 6).translate(0, 0.2, 0);
-const HOUSE = new THREE.BoxGeometry(1.7, 0.95, 1.4).translate(0, 0.475, 0);
-const ROOF = new THREE.ConeGeometry(1.32, 0.75, 4).rotateY(Math.PI / 4).scale(1, 1, 0.84).translate(0, 1.32, 0);
+const TREE = treeGeometry();
+const HOUSE = houseGeometry();
+const POST = postGeometry();
 const WINDOW = new THREE.PlaneGeometry(0.28, 0.26);
-const POST = new THREE.CylinderGeometry(0.045, 0.06, 1.7, 6).translate(0, 0.85, 0);
-const BULB = new THREE.SphereGeometry(0.13, 10, 8).translate(0, 1.78, 0);
-const POOL = new THREE.CircleGeometry(1.6, 28).rotateX(-Math.PI / 2);
+const BULB = new THREE.OctahedronGeometry(0.12).translate(0, 1.8, 0);
+const POOL = new THREE.CircleGeometry(1.6, 6).rotateX(-Math.PI / 2);
 
 function hash(x: number, y: number, salt = 0): number {
   const v = Math.sin(x * 127.1 + y * 311.7 + salt * 74.7) * 43758.5453;
@@ -54,15 +54,13 @@ function useInstances(ref: React.RefObject<THREE.InstancedMesh | null>, items: P
   }, [ref, items, palette, lift]);
 }
 
-const GRASS = ["#1b2925", "#1e2d27", "#182620", "#203029"];
-const ROAD = ["#2e323d", "#323641", "#2b2f39"];
-const PLAZA = ["#3c3835", "#403b38", "#383431"];
-const LEAVES = ["#1d3a2b", "#214031", "#183326", "#264535"];
-const BARK = ["#3a2a1f"];
-const WALLS = ["#2a2e39", "#2e3240", "#272b35"];
-const ROOFS = ["#5b3a35", "#4d3a44", "#3f4252", "#5a4632"];
+const GRASS = ["#0a0a0a", "#0b0b0b", "#090909", "#0c0c0c"];
+const ROAD = ["#101010", "#111111", "#0f0f0f"];
+const PLAZA = ["#151515", "#161616", "#141414"];
+const TREE_EDGES = ["#2c2c2c", "#333333", "#282828", "#393939"];
+const HOUSE_EDGES = ["#3a3a3a", "#444444", "#363636", "#4a4a4a"];
 const LIT = ["#ffcf7a", "#ffd994", "#f6b85c"];
-const POSTS = ["#3a3f4b"];
+const POST_EDGES = ["#575757"];
 const BULBS = ["#ffe2a8"];
 
 export default function Ground({ gridSize, barMin, barMax }: GroundProps) {
@@ -71,14 +69,15 @@ export default function Ground({ gridSize, barMin, barMax }: GroundProps) {
   const roadA = Math.floor(center) - 1;
   const roadB = Math.floor(center);
   const tiles = useRef<THREE.InstancedMesh>(null);
-  const leaves = useRef<THREE.InstancedMesh>(null);
-  const trunks = useRef<THREE.InstancedMesh>(null);
+  const trees = useRef<THREE.InstancedMesh>(null);
   const houses = useRef<THREE.InstancedMesh>(null);
-  const roofs = useRef<THREE.InstancedMesh>(null);
   const windows = useRef<THREE.InstancedMesh>(null);
   const posts = useRef<THREE.InstancedMesh>(null);
   const bulbs = useRef<THREE.InstancedMesh>(null);
   const pools = useRef<THREE.InstancedMesh>(null);
+  const edges = useMemo(() => createEdgeMaterial({ face: "#0c0c0c", headInk: 0.3, width: 1.0, rim: 0.05, ink: "#8a8780" }), []);
+
+  useEffect(() => () => edges.dispose(), [edges]);
 
   const layout = useMemo(() => {
     const isRoad = (x: number, y: number) => x === roadA || x === roadB || y === roadA || y === roadB;
@@ -183,12 +182,10 @@ export default function Ground({ gridSize, barMin, barMax }: GroundProps) {
   const tilePalette = useMemo(() => [...GRASS, ...ROAD, ...PLAZA], []);
 
   useInstances(tiles, allTiles, tilePalette, 0.001);
-  useInstances(leaves, layout.trees, LEAVES);
-  useInstances(trunks, layout.trees, BARK);
-  useInstances(houses, layout.homes, WALLS);
-  useInstances(roofs, layout.homes, ROOFS);
+  useInstances(trees, layout.trees, TREE_EDGES);
+  useInstances(houses, layout.homes, HOUSE_EDGES);
   useInstances(windows, layout.panes, LIT, 0.48);
-  useInstances(posts, layout.lamps, POSTS);
+  useInstances(posts, layout.lamps, POST_EDGES);
   useInstances(bulbs, layout.lamps, BULBS);
   useInstances(pools, layout.lamps, BULBS, 0.012);
 
@@ -199,33 +196,21 @@ export default function Ground({ gridSize, barMin, barMax }: GroundProps) {
     <group>
       <mesh rotation-x={-Math.PI / 2} position={[0, -0.03, 0]}>
         <planeGeometry args={[outer, outer]} />
-        <meshBasicMaterial color="#0b0f13" toneMapped={false} />
+        <meshBasicMaterial color="#070707" toneMapped={false} />
       </mesh>
       <mesh rotation-x={-Math.PI / 2} position={[0, -0.02, 0]}>
         <planeGeometry args={[gridSize, gridSize]} />
-        <meshBasicMaterial color="#0e1316" toneMapped={false} />
+        <meshBasicMaterial color="#1b1b1b" toneMapped={false} />
       </mesh>
       <instancedMesh ref={tiles} args={[TILE, undefined, tileCount]} frustumCulled={false}>
-        <meshLambertMaterial toneMapped={false} />
+        <meshBasicMaterial toneMapped={false} />
       </instancedMesh>
-      <instancedMesh ref={trunks} args={[TRUNK, undefined, 2048]} frustumCulled={false}>
-        <meshLambertMaterial toneMapped={false} />
-      </instancedMesh>
-      <instancedMesh ref={leaves} args={[FOLIAGE, undefined, 2048]} frustumCulled={false}>
-        <meshLambertMaterial toneMapped={false} />
-      </instancedMesh>
-      <instancedMesh ref={houses} args={[HOUSE, undefined, 128]} frustumCulled={false}>
-        <meshLambertMaterial toneMapped={false} />
-      </instancedMesh>
-      <instancedMesh ref={roofs} args={[ROOF, undefined, 128]} frustumCulled={false}>
-        <meshLambertMaterial toneMapped={false} />
-      </instancedMesh>
+      <instancedMesh ref={trees} args={[TREE, edges, 2048]} frustumCulled={false} />
+      <instancedMesh ref={houses} args={[HOUSE, edges, 128]} frustumCulled={false} />
       <instancedMesh ref={windows} args={[WINDOW, undefined, 256]} frustumCulled={false}>
         <meshBasicMaterial toneMapped={false} side={THREE.DoubleSide} />
       </instancedMesh>
-      <instancedMesh ref={posts} args={[POST, undefined, 32]} frustumCulled={false}>
-        <meshLambertMaterial toneMapped={false} />
-      </instancedMesh>
+      <instancedMesh ref={posts} args={[POST, edges, 32]} frustumCulled={false} />
       <instancedMesh ref={bulbs} args={[BULB, undefined, 32]} frustumCulled={false}>
         <meshBasicMaterial toneMapped={false} />
       </instancedMesh>

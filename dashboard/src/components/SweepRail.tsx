@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { clamp, fmt, fmtClock, fmtDuration, fmtGiB, fmtPct, isNum } from "../format";
+import { fmt, fmtClock, fmtDuration, isNum } from "../format";
 import { conditionColor, conditionLabel, type Frame, type TrialEntry } from "../model";
 import type { LiveState } from "../types";
+import ScrollProgress from "./ScrollProgress";
 
 interface SweepRailProps {
   live: LiveState | null;
@@ -22,51 +23,10 @@ const STATUS_TONE: Record<string, string> = {
   pending: "idle",
 };
 
-function VramMeter({ live }: { live: LiveState | null }) {
-  const vram = live?.vram;
-  if (!vram || !isNum(vram.total_mib) || vram.total_mib <= 0) {
-    return <p className="empty">NO VRAM TELEMETRY</p>;
-  }
-  const used = clamp(vram.used_mib / vram.total_mib, 0, 1);
-  const peak = isNum(vram.peak_used_mib) ? clamp(vram.peak_used_mib / vram.total_mib, 0, 1) : null;
-  const base = isNum(vram.baseline_used_mib) ? clamp(vram.baseline_used_mib / vram.total_mib, 0, 1) : null;
-  const tone = used > 0.97 ? "fail" : used > 0.93 ? "warn" : "ok";
-  return (
-    <div className="vram">
-      <div className="vram__figures">
-        <span className="vram__value">{fmtGiB(vram.used_mib)}</span>
-        <span className="vram__total">/ {fmtGiB(vram.total_mib)} GiB</span>
-        <span className="vram__peak">PEAK {fmtGiB(vram.peak_used_mib)}</span>
-      </div>
-      <div
-        className="meter"
-        data-tone={tone}
-        role="meter"
-        aria-label="GPU memory in use"
-        aria-valuemin={0}
-        aria-valuemax={vram.total_mib}
-        aria-valuenow={vram.used_mib}
-      >
-        <div className="meter__fill" style={{ width: `${used * 100}%` }} />
-        {base != null && <div className="meter__mark meter__mark--base" style={{ left: `${base * 100}%` }} title="Baseline before any engine" />}
-        {peak != null && <div className="meter__mark meter__mark--peak" style={{ left: `${peak * 100}%` }} title="Peak observed" />}
-      </div>
-      <div className="vram__legend">
-        <span>
-          <i className="swatch swatch--base" /> BASELINE {fmtGiB(vram.baseline_used_mib)}
-        </span>
-        <span>
-          <i className="swatch swatch--peak" /> PEAK
-        </span>
-        <span>FREE {fmtGiB(vram.free_mib)}</span>
-      </div>
-    </div>
-  );
-}
-
 export default function SweepRail({ live, liveRunning, trials, selectedKey, onSelect, follow, onFollow, frame }: SweepRailProps) {
   const [tab, setTab] = useState<"minds" | "signals" | "armor">("minds");
   const listSection = useRef<HTMLElement>(null);
+  const feed = useRef<HTMLOListElement>(null);
 
   useEffect(() => {
     const container = listSection.current;
@@ -130,21 +90,13 @@ export default function SweepRail({ live, liveRunning, trials, selectedKey, onSe
             </div>
           </div>
         ) : (
-          <p className="empty">{live ? `SWEEP ${live.status.toUpperCase()}` : "NO LIVE SWEEP // python3 experiment.py"}</p>
+          <p className="empty">{live ? `SWEEP ${live.status.toUpperCase()}` : `${done} TOWNS RECORDED`}</p>
         )}
-      </section>
-
-      <section className="section">
-        <h2 className="section__title">
-          <strong>02 // VRAM</strong>
-          <span>RTX MEMORY</span>
-        </h2>
-        <VramMeter live={live} />
       </section>
 
       <section className="section section--grow" ref={listSection}>
         <h2 className="section__title">
-          <strong>03 // TRIALS</strong>
+          <strong>02 // TRIALS</strong>
           <button
             type="button"
             className="btn btn--tiny"
@@ -157,7 +109,7 @@ export default function SweepRail({ live, liveRunning, trials, selectedKey, onSe
           </button>
         </h2>
         {trials.length === 0 ? (
-          <p className="empty">NO TRIALS ON DISK</p>
+          <p className="empty">NO TRIALS RECORDED</p>
         ) : (
           <ul className="trials" role="listbox" aria-label="Trials">
             {trials.map((trial) => (
@@ -180,7 +132,6 @@ export default function SweepRail({ live, liveRunning, trials, selectedKey, onSe
                       <i aria-hidden="true" />
                       {trial.isLive ? "LIVE" : trial.status.toUpperCase()}
                     </span>
-                    <span className="trial__fallback">{trial.fallback != null ? `FB ${fmtPct(trial.fallback, 0)}` : ""}</span>
                   </span>
                 </button>
               </li>
@@ -194,24 +145,12 @@ export default function SweepRail({ live, liveRunning, trials, selectedKey, onSe
               <dd>{selected.attempts ?? "—"}</dd>
             </div>
             <div>
-              <dt>ENGINE</dt>
+              <dt>BRAINS UP</dt>
               <dd>{isNum(selected.buildTime) ? `${fmt(selected.buildTime, 1)}s` : "—"}</dd>
             </div>
             <div>
               <dt>WALL</dt>
               <dd>{fmtDuration(selected.wallTime)}</dd>
-            </div>
-            <div>
-              <dt>PEAK</dt>
-              <dd>{isNum(selected.peakVram) ? `${fmtGiB(selected.peakVram)}G` : "—"}</dd>
-            </div>
-            <div>
-              <dt>PARSE FB</dt>
-              <dd>{fmtPct(selected.fallback, 1)}</dd>
-            </div>
-            <div>
-              <dt>PROMPT</dt>
-              <dd>{selected.encoding ? selected.encoding.replace("_", " ").toUpperCase() : "—"}</dd>
             </div>
             {selected.error && (
               <div className="runtime__error">
@@ -232,51 +171,54 @@ export default function SweepRail({ live, liveRunning, trials, selectedKey, onSe
             SIGNALS <span className="tab__count">{signals.length}</span>
           </button>
           <button type="button" role="tab" aria-selected={tab === "armor"} className="tab" onClick={() => setTab("armor")}>
-            ARMOR LOG <span className="tab__count">{events.length}</span>
+            RUN LOG <span className="tab__count">{events.length}</span>
           </button>
         </div>
-        <ol className="feedlist" role="tabpanel" aria-live="polite">
-          {tab === "minds" &&
-            (thoughts.length ? (
-              thoughts.map((t) => (
-                <li key={`${t.agentId}-${t.note}`} className="thought" data-lie={t.lied}>
-                  <span className="thought__head">
-                    <strong>A{String(t.agentId).padStart(2, "0")}</strong>
-                    <span>{t.archetype}</span>
-                    <span>
-                      SAID {t.stated.toUpperCase()} · {t.inBar ? "AT BAR" : "HOME"}
+        <div className="scrollwrap">
+          <ol className="feedlist" role="tabpanel" aria-live="polite" ref={feed}>
+            {tab === "minds" &&
+              (thoughts.length ? (
+                thoughts.map((t) => (
+                  <li key={`${t.agentId}-${t.note}`} className="thought" data-lie={t.lied}>
+                    <span className="thought__head">
+                      <strong>A{String(t.agentId).padStart(2, "0")}</strong>
+                      <span>{t.archetype}</span>
+                      <span>
+                        SAID {t.stated.toUpperCase()} · {t.inBar ? "AT BAR" : "HOME"}
+                      </span>
+                      {t.lied && <span className="thought__tag">LIE</span>}
                     </span>
-                    {t.lied && <span className="thought__tag">LIE</span>}
-                  </span>
-                  <span className="thought__note">“{t.note}”</span>
-                </li>
-              ))
-            ) : (
-              <li className="empty">NO PRIVATE THOUGHTS · CLONE AGENTS OR NO TRACE</li>
-            ))}
-          {tab === "signals" &&
-            (signals.length ? (
-              signals.map((signal) => (
-                <li key={`${signal.agentId}-${signal.text}`}>
-                  <span className="feedlist__who">A{String(signal.agentId).padStart(2, "0")}</span>
-                  <span className="feedlist__text">{signal.text}</span>
-                </li>
-              ))
-            ) : (
-              <li className="empty">NO BROADCASTS THIS EPOCH</li>
-            ))}
-          {tab === "armor" &&
-            (events.length ? (
-              events.map((event, i) => (
-                <li key={`${event.t}-${i}`}>
-                  <span className="feedlist__who">{fmtClock(event.t)}</span>
-                  <span className="feedlist__text">{event.message}</span>
-                </li>
-              ))
-            ) : (
-              <li className="empty">NO ARMOR EVENTS</li>
-            ))}
-        </ol>
+                    <span className="thought__note">“{t.note}”</span>
+                  </li>
+                ))
+              ) : (
+                <li className="empty">NO PRIVATE THOUGHTS FOR THIS NIGHT</li>
+              ))}
+            {tab === "signals" &&
+              (signals.length ? (
+                signals.map((signal) => (
+                  <li key={`${signal.agentId}-${signal.text}`}>
+                    <span className="feedlist__who">A{String(signal.agentId).padStart(2, "0")}</span>
+                    <span className="feedlist__text">{signal.text}</span>
+                  </li>
+                ))
+              ) : (
+                <li className="empty">NO BROADCASTS THIS EPOCH</li>
+              ))}
+            {tab === "armor" &&
+              (events.length ? (
+                events.map((event, i) => (
+                  <li key={`${event.t}-${i}`}>
+                    <span className="feedlist__who">{fmtClock(event.t)}</span>
+                    <span className="feedlist__text">{event.message}</span>
+                  </li>
+                ))
+              ) : (
+                <li className="empty">NO RUN EVENTS</li>
+              ))}
+          </ol>
+          <ScrollProgress target={feed} watch={`${tab}:${thoughts.length}:${signals.length}:${events.length}`} />
+        </div>
       </section>
     </aside>
   );

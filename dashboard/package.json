@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:hosted": "vite build --mode hosted",
+    "snapshot": "node scripts/snapshot.mjs",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },

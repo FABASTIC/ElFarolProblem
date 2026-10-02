@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { HOSTED } from "./env";
 import type { LaunchConfig, LauncherStatus } from "./setup";
 
 export const ACTIVE_STATES = new Set(["launching", "running", "stopping", "analyzing", "detached"]);
@@ -37,6 +38,10 @@ export function useLauncher(): Launcher {
   const kick = useRef<() => void>(() => undefined);
 
   useEffect(() => {
+    if (HOSTED) {
+      setReachable(false);
+      return;
+    }
     let cancelled = false;
     let timer: number | undefined;
     const controller = new AbortController();
@@ -68,6 +73,7 @@ export function useLauncher(): Launcher {
   }, []);
 
   const run = useCallback(async (path: string, body: unknown) => {
+    if (HOSTED) return false;
     setPending(true);
     setError(null);
     try {

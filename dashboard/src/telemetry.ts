@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { parseCsv } from "./csv";
+import { HOSTED } from "./env";
 import { attachMinds, framesFromRows, type Frame } from "./model";
 
 async function optionalText(url: string, signal: AbortSignal): Promise<string | null> {
@@ -52,7 +53,7 @@ export function usePolledJson<T>(path: string, intervalMs: number): Polled<T> {
         if (cancelled || (error instanceof DOMException && error.name === "AbortError")) return;
         setSnapshot((prev) => ({ ...prev, state: prev.data ? prev.state : "error", error: String(error) }));
       } finally {
-        if (!cancelled) timer = window.setTimeout(tick, document.hidden ? intervalMs * 4 : intervalMs);
+        if (!cancelled && !HOSTED) timer = window.setTimeout(tick, document.hidden ? intervalMs * 4 : intervalMs);
       }
     };
 

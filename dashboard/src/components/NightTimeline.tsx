@@ -1,4 +1,5 @@
 import { useState, type MouseEvent } from "react";
+import { Segmented } from "./Kinetic";
 import type { WorldMode } from "./TopBar";
 import { useElementSize } from "./useElementSize";
 
@@ -83,13 +84,7 @@ export default function NightTimeline({
             ● LIVE
           </button>
         ) : (
-          <div className="segmented" role="group" aria-label="Playback speed">
-            {SPEEDS.map((s) => (
-              <button key={s} type="button" className="btn btn--seg" aria-pressed={speed === s} onClick={() => onSpeed(s)} disabled={mode !== "replay"}>
-                {s}×
-              </button>
-            ))}
-          </div>
+          <Segmented label="Playback speed" className="speeds" options={SPEEDS.map((s) => ({ id: s, label: `${s}×` }))} value={speed} onChange={onSpeed} disabled={mode !== "replay"} />
         )}
       </div>
       <div className="nights__strip" ref={ref}>

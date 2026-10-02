@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import AbstractIntro from "./components/AbstractIntro";
 import AgentCard from "./components/AgentCard";
 import BootOverlay from "./components/BootOverlay";
 import Boundary from "./components/Boundary";
 import Bubbles from "./components/Bubbles";
 import Deck from "./components/Deck";
-import { CrierCard, PopulationCard, RunsCard, TonightCard } from "./components/HudCards";
+import { CrierCard, PopulationCard, RunsCard, SummaryCard, TonightCard } from "./components/HudCards";
+import AuraBackground from "./components/AuraBackground";
+import Cursor from "./components/Cursor";
+import { GooDefs } from "./components/Kinetic";
+import ScrollProgress from "./components/ScrollProgress";
 import MetricsRail from "./components/MetricsRail";
 import NightTimeline from "./components/NightTimeline";
 import SetupPanel from "./components/SetupPanel";
@@ -28,11 +33,17 @@ import World from "./scene/World";
 import { createMotion } from "./scene/People";
 import type { CrowdState } from "./scene/Tavern";
 import { RECOMMENDED, sanitizeConfig, type LaunchConfig } from "./setup";
+import { plainModel } from "./format";
+import { layoutTown } from "./scene/layout";
+import { HOSTED } from "./env";
 import { usePolledJson, useReplay } from "./telemetry";
 import type { AnalyticsReport, ComparisonRow, LiveState } from "./types";
 
 const STALE_AFTER_S = 900;
 const DRAFT_KEY = "elfarol.setup.draft";
+const ABSTRACT_EXIT_MS = 1150;
+
+type IntroState = "open" | "leaving" | "closed";
 
 const STATUS: Record<string, { label: string; tone: string }> = {
   launching: { label: "STARTING", tone: "warn" },
@@ -64,6 +75,13 @@ function loadDraft(): LaunchConfig {
 
 export default function App() {
   const launcher = useLauncher();
+  const [intro, setIntro] = useState<IntroState>("open");
+  const enterTown = useCallback(() => setIntro("leaving"), []);
+  useEffect(() => {
+    if (intro !== "leaving") return;
+    const id = window.setTimeout(() => setIntro("closed"), ABSTRACT_EXIT_MS);
+    return () => window.clearTimeout(id);
+  }, [intro]);
   const launcherState = launcher.status?.state ?? "idle";
   const launcherActive = ACTIVE_STATES.has(launcherState);
   const [hot, setHot] = useState(false);
@@ -125,7 +143,7 @@ export default function App() {
       return;
     }
   }, []);
-  const [setupOpen, setSetupOpen] = useState(true);
+  const [setupOpen, setSetupOpen] = useState(!HOSTED);
   useEffect(() => {
     if (running) setSetupOpen(false);
   }, [running]);
@@ -175,6 +193,8 @@ export default function App() {
   else mode = "empty";
 
   const worldFrame = mode === "setup" || mode === "boot" ? preview : frame;
+  const previousFrame = worldFrame === frame && index > 0 ? frames[index - 1] ?? null : null;
+  const placements = useMemo(() => layoutTown(worldFrame, game.gridSize, game.barMin, game.barMax), [worldFrame, game.gridSize, game.barMin, game.barMax]);
   const frameKey = mode === "setup" || mode === "boot" ? `preview:${stagedMembers}:${stagedSeed}` : `${selectedKey ?? "none"}:${frame?.epoch ?? "none"}`;
   const attendance = worldFrame && !worldFrame.preview ? worldFrame.agents.filter((a) => a.inBar).length : null;
   const crowd: CrowdState = attendance == null ? "idle" : attendance > game.threshold ? "crowded" : "comfortable";
@@ -210,6 +230,41 @@ export default function App() {
   const [resetToken, setResetToken] = useState(0);
   const [speech, setSpeech] = useState(true);
   const reduced = useMemo(() => prefersReducedMotion(), []);
+  const worldRef = useRef<HTMLElement>(null);
+  const leftHud = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const element = worldRef.current;
+    if (!element || reduced) return;
+    const target = { x: 0, y: 0 };
+    const current = { x: 0, y: 0 };
+    let frame = 0;
+    const tick = () => {
+      current.x += (target.x - current.x) * 0.06;
+      current.y += (target.y - current.y) * 0.06;
+      element.style.setProperty("--mx", current.x.toFixed(4));
+      element.style.setProperty("--my", current.y.toFixed(4));
+      frame = Math.abs(target.x - current.x) + Math.abs(target.y - current.y) > 0.0005 ? requestAnimationFrame(tick) : 0;
+    };
+    const aim = (x: number, y: number) => {
+      target.x = x;
+      target.y = y;
+      if (!frame) frame = requestAnimationFrame(tick);
+    };
+    const onMove = (event: PointerEvent) => {
+      if (event.pointerType !== "mouse") return;
+      if ((event.target as HTMLElement | null)?.closest(".hud, .world__tools, .boot")) return;
+      aim((event.clientX / window.innerWidth) * 2 - 1, (event.clientY / window.innerHeight) * 2 - 1);
+    };
+    const onLeave = () => aim(0, 0);
+    element.addEventListener("pointermove", onMove, { passive: true });
+    element.addEventListener("pointerleave", onLeave);
+    return () => {
+      cancelAnimationFrame(frame);
+      element.removeEventListener("pointermove", onMove);
+      element.removeEventListener("pointerleave", onLeave);
+    };
+  }, [reduced, view]);
 
   const inSetup = mode === "setup";
   useEffect(() => {
@@ -279,6 +334,7 @@ export default function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
+      if (intro === "open") return;
       if (target?.closest("input, textarea, select, [contenteditable='true'], .chart")) return;
       if (event.key === "Escape") {
         if (selectedId != null) setSelectedId(null);
@@ -306,7 +362,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [frames.length, onPlaying, onStep, playing, running, selectedId, showSetup, trials.length]);
+  }, [frames.length, intro, onPlaying, onStep, playing, running, selectedId, showSetup, trials.length]);
 
   const feeds: FeedHealth[] = [
     { name: "LIVE", file: "live_state.json", state: live.state, receivedAt: live.receivedAt },
@@ -327,12 +383,12 @@ export default function App() {
             ? "failed"
             : "standby";
   const status = STATUS[statusKey] ?? { label: statusKey.toUpperCase(), tone: "idle" };
-  const model = liveState?.model ?? report.data?.trials.find((t) => t.model_name)?.model_name ?? null;
+  const model = plainModel(liveState?.model ?? report.data?.trials.find((t) => t.model_name)?.model_name ?? null);
 
   const calibration = useMemo(() => {
     const agents = liveState?.sweep.num_agents ?? report.data?.trials[0]?.agents ?? null;
     if (!agents || !comparison.data) return null;
-    const rows = comparison.data.filter((r) => (r.runtime?.engine_build_s ?? 0) > 0 && r.epoch_timings_mean_s);
+    const rows = comparison.data.filter((r) => r.runtime?.profile?.hidden != null && (r.runtime.engine_build_s ?? 0) > 0 && r.epoch_timings_mean_s);
     if (!rows.length) return null;
     return rows.reduce((acc, r) => acc + (r.epoch_timings_mean_s as number), 0) / rows.length / agents;
   }, [comparison.data, liveState, report.data]);
@@ -342,6 +398,8 @@ export default function App() {
 
   return (
     <div className="app" data-view={view}>
+      <GooDefs />
+      <Cursor />
       <TopBar
         view={view}
         onView={setView}
@@ -360,11 +418,15 @@ export default function App() {
         onStop={() => void launcher.stop()}
         canNew={!running && !showSetup}
         onNew={onNew}
+        onAbstract={() => setIntro("open")}
       />
+      {intro !== "closed" && <AbstractIntro leaving={intro === "leaving"} onEnter={enterTown} />}
 
       {view === "world" ? (
-        <main className="world" data-mode={mode}>
-          <div className="world__sky" aria-hidden="true" />
+        <main className="world" data-mode={mode} ref={worldRef}>
+          <div className="world__sky" aria-hidden="true">
+            <AuraBackground />
+          </div>
           <Boundary
             resetKey={selectedKey ?? "none"}
             fallback={(error, retry) => (
@@ -378,12 +440,14 @@ export default function App() {
             )}
           >
             <div className="world__canvas">
+              {intro !== "open" && (
               <World
                 frame={worldFrame}
                 frameKey={frameKey}
                 gridSize={game.gridSize}
                 barMin={game.barMin}
                 barMax={game.barMax}
+                placements={placements}
                 crowd={crowd}
                 fill={fill}
                 lens={lens}
@@ -399,21 +463,26 @@ export default function App() {
                 onHover={setHoverId}
                 onSelect={setSelectedId}
               />
+              )}
             </div>
           </Boundary>
           <div className="world__labels" ref={overlay} aria-hidden="true">
-            <Bubbles frame={worldFrame} selectedId={selectedId} hoveredId={hoverId} speech={speech} />
+            <Bubbles frame={worldFrame} selectedId={selectedId} hoveredId={hoverId} speech={speech} placements={placements} threshold={game.threshold} onSelect={setSelectedId} />
           </div>
           <div className="world__vignette" aria-hidden="true" />
 
-          <div className="hud hud--left">
+          <div className="hud hud--left" ref={leftHud}>
             <TonightCard frame={worldFrame} game={game} mode={mode} members={stagedMembers} />
+            {mode !== "setup" && <SummaryCard frame={worldFrame} previous={previousFrame} threshold={game.threshold} staged={mode === "boot" || mode === "empty"} />}
             {mode !== "setup" && (
               <PopulationCard frame={worldFrame} lens={lens} onLens={(next) => { setLens(next); setIsolate(null); }} isolate={isolate} onIsolate={setIsolate} staged={mode === "boot" || mode === "empty"} />
             )}
             {mode !== "setup" && (
-              <CrierCard frame={worldFrame} log={runLog} events={liveState?.events ?? []} selectedId={selectedId} onSelect={setSelectedId} />
+              <CrierCard frame={worldFrame} log={runLog} events={liveState?.events ?? []} threshold={game.threshold} selectedId={selectedId} onSelect={setSelectedId} />
             )}
+          </div>
+          <div className="hud-progress">
+            <ScrollProgress target={leftHud} watch={`${mode}:${worldFrame?.epoch ?? -1}`} />
           </div>
 
           <div className="hud hud--right">
