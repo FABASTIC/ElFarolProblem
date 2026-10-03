@@ -1,0 +1,16 @@
+.git
+.venv
+venv
+.claude
+.pytest_cache
+__pycache__
+**/__pycache__
+outputs
+outputs_archive
+dashboard/node_modules
+dashboard/dist
+dashboard/.vercel
+node_modules
+*.log
+.env
+.env.*

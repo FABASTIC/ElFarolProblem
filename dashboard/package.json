@@ -4,12 +4,13 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "build:hosted": "vite build --mode hosted",
+    "dev": "node scripts/sync-analyzer.mjs && vite",
+    "build": "node scripts/sync-analyzer.mjs && vite build",
+    "build:hosted": "node scripts/sync-analyzer.mjs && vite build --mode hosted",
     "snapshot": "node scripts/snapshot.mjs",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "sync:engine": "node scripts/sync-analyzer.mjs"
   },
   "dependencies": {
     "@react-three/fiber": "^9.8.1",

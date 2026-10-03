@@ -35,7 +35,7 @@ import type { CrowdState } from "./scene/Tavern";
 import { RECOMMENDED, sanitizeConfig, type LaunchConfig } from "./setup";
 import { plainModel } from "./format";
 import { layoutTown } from "./scene/layout";
-import { HOSTED } from "./env";
+import { BROWSER_ENGINE, HOSTED } from "./env";
 import { usePolledJson, useReplay } from "./telemetry";
 import type { AnalyticsReport, ComparisonRow, LiveState } from "./types";
 
@@ -88,7 +88,7 @@ export default function App() {
 
   const comparison = usePolledJson<ComparisonRow[]>("comparison.json", hot ? 2500 : 5000);
   const report = usePolledJson<AnalyticsReport>("analytics_report.json", hot ? 4000 : 10000);
-  const live = usePolledJson<LiveState>("live_state.json", hot || launcherActive ? 900 : 3000);
+  const live = usePolledJson<LiveState>("live_state.json", hot || launcherActive ? (BROWSER_ENGINE ? 300 : 900) : 3000);
 
   const liveState = live.data;
   const liveFresh = !!liveState && Date.now() / 1000 - liveState.updated_at < STALE_AFTER_S;

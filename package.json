@@ -2,7 +2,9 @@
   "name": "elfarol-problem",
   "private": true,
   "scripts": {
+    "setup": "npm --prefix dashboard ci",
     "dev": "npm --prefix dashboard run dev",
+    "start": "npm --prefix dashboard run build && npm --prefix dashboard run preview -- --host 0.0.0.0",
     "build": "npm --prefix dashboard run build",
     "preview": "npm --prefix dashboard run preview"
   }

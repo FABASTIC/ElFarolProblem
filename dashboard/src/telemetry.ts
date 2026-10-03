@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { parseCsv } from "./csv";
-import { HOSTED } from "./env";
+import { request } from "./engine/backend";
 import { attachMinds, framesFromRows, type Frame } from "./model";
 
 async function optionalText(url: string, signal: AbortSignal): Promise<string | null> {
-  const response = await fetch(url, { cache: "no-store", signal });
+  const response = await request(url, { cache: "no-store", signal });
   if (response.status === 204 || response.status === 404 || !response.ok) return null;
   return response.text();
 }
@@ -29,7 +29,7 @@ export function usePolledJson<T>(path: string, intervalMs: number): Polled<T> {
 
     const tick = async () => {
       try {
-        const response = await fetch(`/data/${path}?optional=1`, { cache: "no-store", signal: controller.signal });
+        const response = await request(`/data/${path}?optional=1`, { cache: "no-store", signal: controller.signal });
         if (response.status === 204 || response.status === 404) {
           if (!cancelled) {
             lastText.current = null;
@@ -53,7 +53,7 @@ export function usePolledJson<T>(path: string, intervalMs: number): Polled<T> {
         if (cancelled || (error instanceof DOMException && error.name === "AbortError")) return;
         setSnapshot((prev) => ({ ...prev, state: prev.data ? prev.state : "error", error: String(error) }));
       } finally {
-        if (!cancelled && !HOSTED) timer = window.setTimeout(tick, document.hidden ? intervalMs * 4 : intervalMs);
+        if (!cancelled) timer = window.setTimeout(tick, document.hidden ? intervalMs * 4 : intervalMs);
       }
     };
 

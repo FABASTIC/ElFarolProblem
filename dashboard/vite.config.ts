@@ -76,10 +76,12 @@ export default defineConfig(() => {
   const dataDir = process.env.ELFAROL_DATA_DIR
     ? path.resolve(process.env.ELFAROL_DATA_DIR)
     : path.resolve(here, "../outputs/experiment");
+  const hosts = (process.env.ELFAROL_ALLOWED_HOSTS ?? "").split(",").map((host) => host.trim()).filter(Boolean);
+  const allowedHosts: true | string[] | undefined = hosts.includes("*") ? true : hosts.length ? hosts : undefined;
   return {
     plugins: [react(), experimentData(dataDir), simLauncher({ repoRoot: path.resolve(here, ".."), dataDir })],
-    server: { port: 5173 },
-    preview: { port: 4173 },
+    server: { port: 5173, allowedHosts },
+    preview: { port: Number(process.env.PORT) || 4173, allowedHosts },
     build: { target: "es2022", chunkSizeWarningLimit: 1800 },
   };
 });
