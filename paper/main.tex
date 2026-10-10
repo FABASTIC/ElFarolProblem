@@ -13,6 +13,7 @@
 \usepackage[colorlinks=true,linkcolor=black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
 \usepackage{caption}
 \captionsetup{font=small,labelfont=bf}
+\emergencystretch=1.5em
 
 \input{results}
 
@@ -61,7 +62,7 @@ Deep multi-agent reinforcement learning has produced learned protocols in cooper
 $N$ agents live on a $50 \times 50$ grid whose central $10 \times 10$ block is the bar. The bar has 100 seats, and the comfort threshold is $T = 60$. Each night $t$ has two phases.
 
 \begin{enumerate}
-  \item \textbf{Broadcast.} Every agent $i$ announces a claim $c_i \in \{\text{staying}, \text{going}\}$. In the \emph{broadcast} condition, the share of ``going'' claims, $b_t = \frac{1}{N}\sum_i \mathbb{1}[c_i = \text{going}]$, is published to all agents. In the \emph{silent} control, claims are made but never shown to anyone.
+  \item \textbf{Broadcast.} Every agent $i$ announces a claim $c_i \in \{\text{staying}, \text{going}\}$. In the \emph{broadcast} condition, the share of ``going'' claims, $b_t = \frac{1}{N}\sum_i \mathbf{1}[c_i = \text{going}]$, is published to all agents. In the \emph{silent} control, claims are made but never shown to anyone.
   \item \textbf{Action.} Every agent picks a target $a_i \in \{\text{home}, \text{bar}\}$ and moves to the nearest free cell of that zone.
 \end{enumerate}
 
@@ -92,7 +93,7 @@ There is no shared model. Agent $i$ owns two multilayer perceptrons, each with t
 
 \paragraph{Speaker.} $Q^{\text{spk}}_i(s_i, c)$ scores the two claims.
 
-\paragraph{Actor.} $Q^{\text{act}}_i(x_i, a)$ scores home and bar. Its input is $x_i = (s_i, b_t, c_i)$: the actor sees tonight's broadcast share (zeroed in silent towns) and its own claim, which it sees in both conditions. A forecasting head predicts the attendance share through a sigmoid. A learned scalar couples the action values to the agent's own claim, $Q(x, a) \mathrel{+}= h_i\,[\mathbb{1}(a = \text{home})(1 - c_i) + \mathbb{1}(a = \text{bar})\,c_i]$, and is initialised from the agent's honesty trait as $h_i = 2(\eta_i - 0.5)$. A positive coupling makes acting in line with one's own claim more attractive.
+\paragraph{Actor.} $Q^{\text{act}}_i(x_i, a)$ scores home and bar. Its input is $x_i = (s_i, b_t, c_i)$: the actor sees tonight's broadcast share (zeroed in silent towns) and its own claim, which it sees in both conditions. A forecasting head predicts the attendance share through a sigmoid. A learned scalar couples the action values to the agent's own claim, $Q(x, a) \mathrel{+}= h_i\,[\mathbf{1}(a = \text{home})(1 - c_i) + \mathbf{1}(a = \text{bar})\,c_i]$, and is initialised from the agent's honesty trait as $h_i = 2(\eta_i - 0.5)$. A positive coupling makes acting in line with one's own claim more attractive.
 
 \paragraph{Temperament.} Each agent draws its honesty $\eta_i$, risk tolerance and competitiveness from $\mathrm{Beta}(2.2, 2.2)$, a learning rate log-uniform in $[10^{-3.2}, 10^{-2.2}]$, a softmax temperature, an exploration rate and a discount $\gamma_i \in [0.3, 0.8]$. Risk tolerance and competitiveness shift the initial biases of the ``bar'' and ``going'' heads.
 
@@ -135,7 +136,6 @@ Table~\ref{tab:contrast} reports the paired contrasts. No effect on attendance, 
     Metric & S & B & $\Delta$ & $p$ & $q$ & S & B & $\Delta$ & $p$ & $q$ & S & B & $\Delta$ & $p$ & $q$ \\
     \midrule
     \input{table_contrast}
-    \bottomrule
   \end{tabular}}
 \end{table}
 
@@ -160,7 +160,6 @@ Why does a public channel do nothing? Table~\ref{tab:information} answers by loo
     $N$ & Condition & $r(b_t, A_t/N)$ & Mean $b_t$ & Bluff & Covert & SD$(A_t)$, late \\
     \midrule
     \input{table_information}
-    \bottomrule
   \end{tabular}
 \end{table}
 

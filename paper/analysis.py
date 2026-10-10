@@ -99,6 +99,10 @@ def fmt(value, digits=3):
     return f"{value:.{digits}f}"
 
 
+def signed_tex(value, digits=3):
+    return f"$+${abs(value):.{digits}f}" if value >= 0 else f"$-${abs(value):.{digits}f}"
+
+
 def fmt_p(value):
     if value is None:
         return "--"
@@ -139,7 +143,7 @@ def main():
             cells.append(f"{fmt(v['control']['mean'], digits)} & {fmt(v['delta2']['mean'], digits)} & {'$+$' if v['estimate'] >= 0 else '$-$'}{fmt(abs(v['estimate']), digits)} & {fmt_p(v['p_value'])} & {fmt_p(q_lookup[(n, group, key)])}")
         table.append(" & ".join(cells) + r" \\")
     with open(os.path.join(OUT, "table_contrast.tex"), "w", encoding="utf-8") as f:
-        f.write("\n".join(table) + "\n")
+        f.write("\n".join(table) + "\n\\bottomrule\n")
 
     info_rows = []
     claim_corr = {c: {} for c in CONDITIONS}
@@ -165,7 +169,8 @@ def main():
             info_rows.append((n, condition, np.mean(corrs), np.std(corrs, ddof=1), np.mean(shares), np.mean(bluffs), np.mean(coverts), np.mean(sds)))
     with open(os.path.join(OUT, "table_information.tex"), "w", encoding="utf-8") as f:
         for n, condition, c_mean, c_sd, share, bluff, covert, sd in info_rows:
-            f.write(f"{n} & {LABEL[condition]} & {c_mean:+.3f} $\\pm$ {c_sd:.3f} & {share:.3f} & {bluff:.3f} & {covert:.3f} & {sd:.2f} \\\\\n")
+            f.write(f"{n} & {LABEL[condition]} & {signed_tex(c_mean)} $\\pm$ {c_sd:.3f} & {share:.3f} & {bluff:.3f} & {covert:.3f} & {sd:.2f} \\\\\n")
+        f.write("\\bottomrule\n")
     corr_pairs = {n: sign_flip_p(np.array(claim_corr["delta2"][n]) - np.array(claim_corr["control"][n])) for n in SIZES}
     for n in SIZES:
         macros[f"corrCtl{n}"] = f"{np.mean(claim_corr['control'][n]):+.3f}"
@@ -280,7 +285,8 @@ def main():
     with open(os.path.join(OUT, "results.tex"), "w", encoding="utf-8") as f:
         for key, value in sorted(macros.items()):
             name = key.replace("150", "CL").replace("100", "C").replace("80", "LXXX")
-            f.write(f"\\newcommand{{\\r{name}}}{{{value}}}\n")
+            text = f"\\ensuremath{{-}}{value[1:]}" if value.startswith("-") else value
+            f.write(f"\\newcommand{{\\r{name}}}{{{text}}}\n")
     print(json.dumps(macros, indent=1))
 
 
