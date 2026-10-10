@@ -1,5 +1,5 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
-import { HOSTED, REPO_URL } from "../env";
+import { BROWSER_ENGINE, REPO_URL } from "../env";
 import { fmtDuration } from "../format";
 import { CopyButton } from "./Kinetic";
 import type { Launcher } from "../launcher";
@@ -160,10 +160,15 @@ function SeedEditor({ seeds, onChange }: { seeds: number[]; onChange: (seeds: nu
   );
 }
 
-const ENGINES: { id: Engine; title: string; sub: string; lock?: string }[] = [
-  { id: "llm", title: "ISOLATED PYTORCH TENSORS", sub: "One brain per agent, batched tensor math" },
-  { id: "rehearsal", title: "REHEARSAL", sub: "Slow-motion preview brains", lock: "GPU ONLY" },
-];
+const ENGINES: { id: Engine; title: string; sub: string; lock?: string }[] = BROWSER_ENGINE
+  ? [
+      { id: "llm", title: "IN-BROWSER TENSOR BRAINS", sub: "The PyTorch DQN brains, ported to run on this device" },
+      { id: "rehearsal", title: "REHEARSAL", sub: "Slow-motion preview brains", lock: "PYTHON ONLY" },
+    ]
+  : [
+      { id: "llm", title: "ISOLATED PYTORCH TENSORS", sub: "One brain per agent, batched tensor math" },
+      { id: "rehearsal", title: "REHEARSAL", sub: "Slow-motion preview brains", lock: "GPU ONLY" },
+    ];
 
 export default function SetupPanel({ draft, onDraft, launcher, calibration, canClose, onClose, onBegin }: SetupPanelProps) {
   const [armed, setArmed] = useState(false);
@@ -353,14 +358,16 @@ export default function SetupPanel({ draft, onDraft, launcher, calibration, canC
         ))}
       </ul>
 
-      {HOSTED ? (
+      {BROWSER_ENGINE ? (
         <div className="setup__offline" role="status">
           <p>
-            This is a hosted replay of a finished sweep. New towns train on your own machine: clone{" "}
+            Every town trains right here on your device: phone, tablet or laptop, no install and no server. These are the same speaker and actor DQN
+            brains as the PyTorch engine, ported to run in your browser, and the statistics come from the same <code>analyzer.py</code>. Nothing is
+            uploaded, and results last until you close the tab. To train with PyTorch itself, clone{" "}
             <a href={REPO_URL} target="_blank" rel="noreferrer">
               the repository
-            </a>
-            , start the dashboard with <code>npm run dev</code>, or run:
+            </a>{" "}
+            and run:
           </p>
           <div className="setup__cmdrow">
             <code className="setup__command">{command}</code>
@@ -369,7 +376,7 @@ export default function SetupPanel({ draft, onDraft, launcher, calibration, canC
         </div>
       ) : offline ? (
         <div className="setup__offline" role="status">
-          <p>The launcher is offline (open this page through <code>npm run dev</code>). Start the run from a terminal instead:</p>
+          <p>The launcher is offline (open this page through <code>npm run dev</code>). Start the run from a terminal instead, on CPU or GPU:</p>
           <div className="setup__cmdrow">
             <code className="setup__command">{command}</code>
             <CopyButton text={command} />

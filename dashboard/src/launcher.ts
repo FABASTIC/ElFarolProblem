@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { HOSTED } from "./env";
+import { request } from "./engine/backend";
 import type { LaunchConfig, LauncherStatus } from "./setup";
 
 export const ACTIVE_STATES = new Set(["launching", "running", "stopping", "analyzing", "detached"]);
@@ -16,7 +16,7 @@ export interface Launcher {
 }
 
 async function post(path: string, body: unknown): Promise<{ ok: boolean; data: LauncherStatus | { error?: string } | null }> {
-  const response = await fetch(path, {
+  const response = await request(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body ?? {}),
@@ -38,10 +38,6 @@ export function useLauncher(): Launcher {
   const kick = useRef<() => void>(() => undefined);
 
   useEffect(() => {
-    if (HOSTED) {
-      setReachable(false);
-      return;
-    }
     let cancelled = false;
     let timer: number | undefined;
     const controller = new AbortController();
@@ -49,7 +45,7 @@ export function useLauncher(): Launcher {
       if (timer) window.clearTimeout(timer);
       let next = 4000;
       try {
-        const response = await fetch("/api/sim/status", { cache: "no-store", signal: controller.signal });
+        const response = await request("/api/sim/status", { cache: "no-store", signal: controller.signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = (await response.json()) as LauncherStatus;
         if (cancelled) return;
@@ -73,7 +69,6 @@ export function useLauncher(): Launcher {
   }, []);
 
   const run = useCallback(async (path: string, body: unknown) => {
-    if (HOSTED) return false;
     setPending(true);
     setError(null);
     try {

@@ -33,14 +33,32 @@ interface LauncherOptions {
   dataDir: string;
 }
 
+interface TorchRuntime {
+  host: "wsl" | "native";
+  python: string;
+  detail: string;
+}
+
 function hostPython(): string {
   return process.env.ELFAROL_PYTHON || (process.platform === "win32" ? "python" : "python3");
 }
 
-function torchHost(): "wsl" | "native" {
+function torchHostPreference(): "wsl" | "native" | "auto" {
   const chosen = process.env.ELFAROL_TORCH_HOST;
-  if (chosen === "wsl" || chosen === "native") return chosen;
-  return process.platform === "win32" ? "wsl" : "native";
+  return chosen === "wsl" || chosen === "native" ? chosen : "auto";
+}
+
+function nativeCandidates(repoRoot: string): string[] {
+  const venv = process.platform === "win32" ? path.join(repoRoot, ".venv", "Scripts", "python.exe") : path.join(repoRoot, ".venv", "bin", "python");
+  const list: string[] = [];
+  if (process.env.ELFAROL_PYTHON) list.push(process.env.ELFAROL_PYTHON);
+  if (fs.existsSync(venv)) list.push(venv);
+  list.push(...(process.platform === "win32" ? ["python", "py"] : ["python3", "python"]));
+  return [...new Set(list)];
+}
+
+function lastLine(output: string): string {
+  return output.split(/\r?\n/).filter((line) => line.trim()).pop()?.trim() ?? "";
 }
 
 function wslDistro(): string {
@@ -55,7 +73,8 @@ function engineLabel(): string {
   return "Isolated PyTorch Tensors";
 }
 
-const TORCH_PROBE = "import torch; print(torch.__version__, 'cuda' if torch.cuda.is_available() else 'cpu')";
+const TORCH_PROBE =
+  "import torch; mps = getattr(torch.backends, 'mps', None); print(torch.__version__, 'cuda' if torch.cuda.is_available() else 'mps' if mps is not None and mps.is_available() else 'cpu')";
 
 function toWslPath(target: string): string {
   const resolved = path.resolve(target);
@@ -131,6 +150,7 @@ class Launcher {
     rehearsal: { available: null, detail: "verified when you press Begin" },
   };
   private probedAt = 0;
+  private runtime: TorchRuntime | null = null;
   private wslPulse: { pid: number; at: number; alive: boolean | null } | null = null;
 
   constructor(options: LauncherOptions) {
@@ -225,22 +245,37 @@ class Launcher {
   async refreshCapabilities(force = false) {
     if (!force && Date.now() - this.probedAt < 120_000) return;
     this.probedAt = Date.now();
-    const python = hostPython();
-    const local = await probe(python, ["-c", TORCH_PROBE], 20_000);
-    this.capabilities.rehearsal = local.ok
-      ? { available: true, detail: `${python} · torch ${local.output}` }
-      : { available: false, detail: `GPU ONLY · ${python} has no torch` };
-    if (torchHost() === "wsl") {
-      const venv = await probe("wsl.exe", ["-d", wslDistro(), "-e", "bash", "-lc", `test -x ${wslPython()} && ${wslPython()} -c "${TORCH_PROBE}"`], 90_000);
-      this.capabilities.llm = venv.ok && venv.output.endsWith("cuda")
-        ? { available: true, detail: `WSL ${wslDistro()} · torch ${venv.output}` }
-        : { available: false, detail: `WSL ${wslDistro()} has no CUDA torch at ${wslPython()}` };
-    } else {
-      const native = await probe(python, ["-c", TORCH_PROBE], 60_000);
-      this.capabilities.llm = native.ok && native.output.endsWith("cuda")
-        ? { available: true, detail: `${python} · torch ${native.output}` }
-        : { available: false, detail: `${python} has no CUDA torch` };
+    const preference = torchHostPreference();
+    const tried: string[] = [];
+    let native: TorchRuntime | null = null;
+    let found: TorchRuntime | null = null;
+    if (preference !== "wsl") {
+      for (const python of nativeCandidates(this.repoRoot)) {
+        const result = await probe(python, ["-c", TORCH_PROBE], 45_000);
+        if (result.ok) {
+          native = { host: "native", python, detail: `${path.basename(python)} · torch ${lastLine(result.output)}` };
+          break;
+        }
+        tried.push(path.basename(python));
+      }
+      found = native;
     }
+    if (!found && preference !== "native" && (preference === "wsl" || process.platform === "win32")) {
+      const venv = await probe("wsl.exe", ["-d", wslDistro(), "-e", "bash", "-lc", `test -x ${wslPython()} && ${wslPython()} -c "${TORCH_PROBE}"`], 90_000);
+      if (venv.ok) found = { host: "wsl", python: wslPython(), detail: `WSL ${wslDistro()} · torch ${lastLine(venv.output)}` };
+      else tried.push(`WSL ${wslDistro()}`);
+    }
+    this.runtime = found;
+    this.capabilities.llm = found
+      ? { available: true, detail: found.detail }
+      : { available: false, detail: `no Python with PyTorch found (tried ${tried.join(", ")}). Run pip install -r requirements.txt or set ELFAROL_PYTHON` };
+    this.capabilities.rehearsal = native
+      ? { available: true, detail: native.detail }
+      : { available: false, detail: "needs a native Python with PyTorch" };
+  }
+
+  private analyzerPython(): string {
+    return this.runtime?.host === "native" ? this.runtime.python : hostPython();
   }
 
   private settleDetached() {
@@ -322,7 +357,7 @@ class Launcher {
       stopFile,
     ];
     if (config.engine === "rehearsal") args.push("--device", "cpu", "--pace", String(config.pace));
-    else args.push("--device", "cuda");
+    else args.push("--device", process.env.ELFAROL_DEVICE || "auto");
     return args;
   }
 
@@ -348,7 +383,9 @@ class Launcher {
     if (!config) return { code: 400, body: { error: errors.join(" ") } };
     if (this.busy()) return { code: 409, body: { error: "A sweep is already running. Stop it before starting another." } };
     const capability = this.capabilities[config.engine];
-    if (capability.available === false) return { code: 412, body: { error: `${config.engine.toUpperCase()} engine unavailable: ${capability.detail}` } };
+    const runtime = this.runtime;
+    if (capability.available !== true || !runtime) return { code: 412, body: { error: `PyTorch engine unavailable: ${capability.detail}` } };
+    const host = config.engine === "llm" ? runtime.host : "native";
     let archivedTo: string | null = null;
     try {
       fs.mkdirSync(this.dataDir, { recursive: true });
@@ -357,7 +394,6 @@ class Launcher {
     } catch (error) {
       return { code: 500, body: { error: `Could not archive the previous run: ${String(error)}` } };
     }
-    const host = config.engine === "llm" ? torchHost() : "native";
     this.run = {
       state: "launching",
       engine: config.engine,
@@ -387,8 +423,9 @@ class Launcher {
         child.unref();
       } else {
         const args = this.experimentArgs(config, this.dataDir, this.file(STOP_FILE));
-        this.note(`${hostPython()} ${args.join(" ")}`);
-        child = this.spawnLogged(hostPython(), args, this.repoRoot);
+        const python = runtime.host === "native" ? runtime.python : hostPython();
+        this.note(`${python} ${args.join(" ")}`);
+        child = this.spawnLogged(python, args, this.repoRoot);
         this.run.pid = child.pid ?? null;
       }
     } catch (error) {
@@ -455,7 +492,7 @@ class Launcher {
       this.persist();
     };
     try {
-      const analyzer = this.spawnLogged(hostPython(), ["-u", "analyzer.py", "--experiment-dir", this.dataDir, "--quiet"], this.repoRoot);
+      const analyzer = this.spawnLogged(this.analyzerPython(), ["-u", "analyzer.py", "--experiment-dir", this.dataDir, "--quiet"], this.repoRoot);
       analyzer.on("error", (error) => {
         this.note(`analyzer could not start: ${error.message}`);
         done(null);

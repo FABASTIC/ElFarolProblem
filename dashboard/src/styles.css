@@ -5332,3 +5332,56 @@ html.has-cursor select {
     flex-basis: 190px;
   }
 }
+
+.serif {
+  font-family: inherit;
+  font-style: normal;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  color: var(--text-2);
+}
+
+.cite {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.topbar__night em,
+.topbar__abstract-glyph {
+  font-style: normal;
+}
+
+.summary__headline {
+  font-family: var(--display);
+  font-style: normal;
+  font-weight: 500;
+  font-size: 19px;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+
+em {
+  font-style: normal;
+}
+
+.setup__head h2 .serif {
+  font-size: 1em;
+}
+
+.nights__legend {
+  min-width: max-content;
+}
+
+.nights__legend i[data-tone="line"] {
+  width: 10px;
+  height: 0;
+  border-radius: 0;
+  border-top: 1px dashed var(--text);
+  opacity: 0.8;
+}
+
+.nights__strip svg {
+  overflow: hidden;
+}
