@@ -1,0 +1,222 @@
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage[colorlinks=true,linkcolor=black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+\usepackage{caption}
+\captionsetup{font=small,labelfont=bf}
+
+\input{results}
+
+\title{Cheap Talk at El Farol: Independent Deep Q-Learners\\Learn to Babble, Not to Deceive}
+\author{Vairaj Malhotra\\\small\texttt{malhotravairaj@gmail.com}}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Arthur's El Farol Bar problem asks how a population of independent agents can coordinate on a resource that is only worth using when few others use it. We add a public cheap-talk channel: every night each agent first announces whether it will go, and then decides whether it actually goes. Each agent is an isolated pair of small neural networks, a speaker and an actor, trained by deep Q-learning on its own experience, with its own weights, optimiser and temperament. In a paired-seed experiment with 12 seeds, 100 nights and populations of 80, 100 and 150 agents, opening the channel changes none of the outcomes we measure. Attendance, welfare, distance from equilibrium, inequality and strategy entropy all stay the same: of \rnTests{} contrasts, \rnNominal{} reach nominal significance and none survive false-discovery-rate control (smallest $q = \rminQ$). The reason is visible in the messages themselves. The share of agents claiming they will go stays at one half and is uncorrelated with how many actually go ($|r| < 0.06$ at every population size), so the claims carry no information. Because claims are independent of actions, the measured lie rate sits near $0.5$ whether or not anyone can hear, and whether a lie is a bluff or a covert visit is fixed by attendance alone. The lie rate of an individual agent is predicted by its honesty prior (Spearman $\rho \approx -0.5$ to $-0.64$) and not by strategy. Independent learners in this congestion game settle into a babbling outcome, which is consistent with cheap-talk theory when interests conflict. We release the full system, including a browser-based reproduction of the learning engine that we validated statistically against the PyTorch reference.
+\end{abstract}
+
+\section{Introduction}
+
+In the El Farol Bar problem \citep{arthur1994}, $N$ people decide each week whether to visit a bar that is enjoyable only when it is not crowded. No forecasting rule can be shared by everyone and stay correct: if all expect a quiet night, all go, and the bar overflows. The problem became a canonical example of inductive reasoning under bounded rationality and, through the minority game \citep{challet1997}, a workhorse model of competitive coordination.
+
+People rarely coordinate in silence. They tell each other what they plan to do, and they can misreport. Talk that costs nothing and binds no one is \emph{cheap talk} \citep{crawford1982,farrell1996}. Whether it helps depends on whether interests are aligned. In El Farol they are not: every patron prefers that everyone else stay home. That creates an obvious temptation to bluff (``I'm going'', in the hope of thinning the crowd) or to slip in quietly (``I'm staying'', and then going).
+
+We ask a simple empirical question: when every patron is an independent learning agent that can announce an intention and then act, does a public channel change coordination, and do the agents learn to use it strategically? Multi-agent reinforcement learning has shown that communication can emerge between learners when it pays \citep{foerster2016,lazaridou2017}, and that it can turn uninformative when interests conflict \citep{cao2018}. El Farol is an especially clean testbed: the payoff structure is fully known, its Nash equilibria can be computed exactly, and there is a natural control condition in which nobody hears anybody.
+
+\paragraph{Contributions.}
+\begin{itemize}
+  \item A two-phase El Farol game with pre-play cheap talk, played by populations of fully isolated deep Q-learners. Each agent has separate speaker and actor networks, its own replay memory, its own optimiser and a sampled temperament (Section~\ref{sec:model}).
+  \item A paired-seed experiment across three population sizes, analysed against exact equilibrium benchmarks with hierarchical bootstrap intervals, exact sign-flip tests and false-discovery-rate control (Section~\ref{sec:design}).
+  \item A null result with a mechanism. The channel does not change collective outcomes, because the learned claims are independent of the learned actions. That independence alone explains the measured deception rate and its composition (Section~\ref{sec:results}).
+  \item An open reference implementation, including an in-browser port of the learning engine that we validated against PyTorch, so that anyone can rerun the experiment on any device (Section~\ref{sec:repro}).
+\end{itemize}
+
+\section{Related work}
+
+\paragraph{El Farol and minority games.}
+\citet{arthur1994} introduced the bar problem with agents choosing among fixed forecasting heuristics. The minority game \citep{challet1997} recast it as a binary choice in which the minority side wins, and it became a large literature in statistical physics. Both lines study agents that adapt without communicating. Our silent condition is a learning-agent version of this classic setting, and our broadcast condition adds the channel.
+
+\paragraph{Cheap talk.}
+In the sender--receiver model of \citet{crawford1982}, how much information costless messages can carry shrinks as the interests of sender and receiver diverge. A \emph{babbling} equilibrium, in which messages are ignored and carry no information, always exists \citep{farrell1996}. El Farol is a congestion game \citep{rosenthal1973}: every agent is both a sender and a receiver, and each benefits when the others are misled into staying home.
+
+\paragraph{Communication between learning agents.}
+Deep multi-agent reinforcement learning has produced learned protocols in cooperative games \citep{foerster2016} and referential games \citep{lazaridou2017}. When interests are only partially aligned, as in negotiation, \citet{cao2018} found that self-interested agents do not learn to use a cheap-talk channel, while prosocial agents do. We study a population setting with many independent learners rather than pairs, in which nobody shares gradients or parameters. This is the independent-learner regime of \citet{tan1993}, scaled up with deep Q-networks \citep{mnih2015}.
+
+\section{Model}\label{sec:model}
+
+\subsection{The game}
+
+$N$ agents live on a $50 \times 50$ grid whose central $10 \times 10$ block is the bar. The bar has 100 seats, and the comfort threshold is $T = 60$. Each night $t$ has two phases.
+
+\begin{enumerate}
+  \item \textbf{Broadcast.} Every agent $i$ announces a claim $c_i \in \{\text{staying}, \text{going}\}$. In the \emph{broadcast} condition, the share of ``going'' claims, $b_t = \frac{1}{N}\sum_i \mathbb{1}[c_i = \text{going}]$, is published to all agents. In the \emph{silent} control, claims are made but never shown to anyone.
+  \item \textbf{Action.} Every agent picks a target $a_i \in \{\text{home}, \text{bar}\}$ and moves to the nearest free cell of that zone.
+\end{enumerate}
+
+With $A_t$ the number of agents in the bar, payoffs are
+\begin{equation}
+u_i =
+\begin{cases}
++1.0 & \text{in the bar and } A_t \le T,\\
+-1.0 & \text{in the bar and } A_t > T,\\
++0.3 & \text{at home.}
+\end{cases}
+\end{equation}
+
+An agent has \emph{lied} when its action contradicts its claim. A \emph{bluff} is a ``going'' claim followed by staying home; a \emph{covert} visit is a ``staying'' claim followed by going. The \emph{deception index} is the share of agents who lied on a given night.
+
+\paragraph{Equilibrium benchmarks.}
+The unique pure-strategy Nash attendance is $A^* = T = 60$ for every $N > T$: goers would lose by one more arrival, and stayers would lose by joining. The symmetric mixed equilibrium $p^*$ solves
+\begin{equation}
+u_c\,F(T-1; N-1, p) + u_x\,\bigl(1 - F(T-1; N-1, p)\bigr) = u_h,
+\end{equation}
+with $F$ the binomial CDF. This gives $p^* = \rpstarLXXX$, $\rpstarC$ and $\rpstarCL$, and expected attendance $Np^* = \rmixedALXXX$, $\rmixedAC$ and $\rmixedACL$, for $N = 80$, 100 and 150. Welfare is maximised at $A = \roptAC$.
+
+\subsection{Agents}
+
+There is no shared model. Agent $i$ owns two multilayer perceptrons, each with two hidden layers of 32 ReLU units. Each agent has 4{,}006 parameters and its own Adam optimiser \citep{kingma2015}, and is initialised from its own random stream.
+
+\paragraph{Observation.} The 25-dimensional private state $s_i$ contains the attendance share and the agent's own reward for each of the last 8 nights, a one-hot code for its last realised strategy, the comfort ratio $T/N$, the last published broadcast share, an exponentially smoothed reliability of that share, the agent's own empirical truthfulness, and a flag for whether the channel exists. In the silent condition every channel feature is zero.
+
+\paragraph{Speaker.} $Q^{\text{spk}}_i(s_i, c)$ scores the two claims.
+
+\paragraph{Actor.} $Q^{\text{act}}_i(x_i, a)$ scores home and bar. Its input is $x_i = (s_i, b_t, c_i)$: the actor sees tonight's broadcast share (zeroed in silent towns) and its own claim, which it sees in both conditions. A forecasting head predicts the attendance share through a sigmoid. A learned scalar couples the action values to the agent's own claim, $Q(x, a) \mathrel{+}= h_i\,[\mathbb{1}(a = \text{home})(1 - c_i) + \mathbb{1}(a = \text{bar})\,c_i]$, and is initialised from the agent's honesty trait as $h_i = 2(\eta_i - 0.5)$. A positive coupling makes acting in line with one's own claim more attractive.
+
+\paragraph{Temperament.} Each agent draws its honesty $\eta_i$, risk tolerance and competitiveness from $\mathrm{Beta}(2.2, 2.2)$, a learning rate log-uniform in $[10^{-3.2}, 10^{-2.2}]$, a softmax temperature, an exploration rate and a discount $\gamma_i \in [0.3, 0.8]$. Risk tolerance and competitiveness shift the initial biases of the ``bar'' and ``going'' heads.
+
+\paragraph{Policy and learning.} Both heads act through a softmax with temperature $\tau_i \cdot \max(0.15, 0.97^t)$, mixed with uniform $\epsilon$-exploration that decays on the same schedule. After each night, the agent stores the transition in its own replay memory \citep{lin1992}, which holds 256 transitions, and takes 4 gradient steps on minibatches of 16. Both action values are trained against the counterfactual payoffs, since the payoff of the action not taken is known after the night is over. The actor uses the target $r + \gamma_i \max_c Q'^{\text{spk}}(s')$, and the speaker uses the two-night return plus $\gamma_i^2 \max_c Q'^{\text{spk}}(s'')$. The losses are smooth-$L_1$ TD losses plus a mean-squared forecast loss. Gradients are clipped to norm 5, and target networks are synchronised every 8 nights.
+
+\section{Experimental design}\label{sec:design}
+
+We ran $N \in \{80, 100, 150\}$. All three exceed $T$, so overcrowding is possible and the dilemma is live. For each $N$ we ran seeds $1, \dots, 12$ in both conditions, 72 towns of 100 nights each. A seed fixes the initial positions and temperaments, so the silent and broadcast towns of a seed differ only in the channel. Every contrast is therefore paired by seed.
+
+\paragraph{Measures.} For each town we compute the mean attendance, deception index and utility. We also compute the mean absolute gap $|A_t - A^*|$, the per-agent ex-post regret (the gain from a unilateral deviation), and efficiency, which is realised welfare as a share of the welfare optimum. Further measures are the max-normalised Gini coefficient of final cumulative utility, and the entropy of the population distribution over the four behavioural strategies (honest go, honest stay, bluff, covert).
+
+\paragraph{Inference.} Treatment effects are broadcast minus silent. The 95\% intervals come from a hierarchical percentile bootstrap \citep{efron1993}: seeds are resampled, then agents or circular blocks of nights within each seed. $p$-values come from the exact two-sided sign-flip test over the 12 seed-level paired differences \citep{fisher1935}. We report all \rnTests{} contrasts (22 metrics $\times$ 3 population sizes) with Benjamini--Hochberg $q$-values.
+
+\section{Results}\label{sec:results}
+
+\subsection{Coordination without the channel is already near equilibrium, and the channel changes nothing}
+
+Figure~\ref{fig:attendance} shows attendance over the 100 nights. In both conditions the population quickly settles into noisy oscillation just below the comfort line. Mean attendance is \rattCtlLXXX, \rattCtlC{} and \rattCtlCL{} in the silent condition, against \rattBcLXXX, \rattBcC{} and \rattBcCL{} with the channel open. As $N$ grows, attendance approaches the mixed-equilibrium prediction $Np^*$. The two conditions are indistinguishable at every population size.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/attendance.pdf}
+  \caption{Attendance per night (mean across 12 seeds, 95\% band) in silent and broadcast towns. The dashed line is the comfort threshold $T = A^* = 60$.}
+  \label{fig:attendance}
+\end{figure}
+
+Table~\ref{tab:contrast} reports the paired contrasts. No effect on attendance, utility, distance to equilibrium, regret, efficiency, inequality or strategy entropy is distinguishable from zero after correction. All differences are small: the largest relative change in mean utility is under 4\%. Across all \rnTests{} contrasts, \rnNominal{} have $p < 0.05$, they point in inconsistent directions across population sizes, and none survives false-discovery-rate control (smallest $q = \rminQ$). Figure~\ref{fig:contrast} shows the corresponding intervals.
+
+\begin{table}[t]
+  \centering
+  \small
+  \setlength{\tabcolsep}{3pt}
+  \caption{Silent (S) versus broadcast (B) towns, with the paired difference $\Delta = $ B $-$ S, the exact sign-flip $p$, and the Benjamini--Hochberg $q$ over all \rnTests{} contrasts. Means are over 12 seeds.}
+  \label{tab:contrast}
+  \resizebox{\linewidth}{!}{%
+  \begin{tabular}{l ccccc ccccc ccccc}
+    \toprule
+    & \multicolumn{5}{c}{$N = 80$} & \multicolumn{5}{c}{$N = 100$} & \multicolumn{5}{c}{$N = 150$} \\
+    \cmidrule(lr){2-6}\cmidrule(lr){7-11}\cmidrule(lr){12-16}
+    Metric & S & B & $\Delta$ & $p$ & $q$ & S & B & $\Delta$ & $p$ & $q$ & S & B & $\Delta$ & $p$ & $q$ \\
+    \midrule
+    \input{table_contrast}
+    \bottomrule
+  \end{tabular}}
+\end{table}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/contrast.pdf}
+  \caption{Effect of opening the channel, as a percentage of the silent mean, with 95\% hierarchical bootstrap intervals, for each population size.}
+  \label{fig:contrast}
+\end{figure}
+
+\subsection{The claims carry no information}
+
+Why does a public channel do nothing? Table~\ref{tab:information} answers by looking at the messages. In every condition and at every size, the share of agents claiming ``going'' averages one half. Across nights it is uncorrelated with the share that actually goes: the per-town Pearson correlation is \rcorrBcLXXX, \rcorrBcC{} and \rcorrBcCL{} with the channel open, against \rcorrCtlLXXX, \rcorrCtlC{} and \rcorrCtlCL{} when nobody listens. The paired differences are not significant ($p = \rcorrPLXXX$, $\rcorrPC$ and $\rcorrPCL$). An agent that conditioned on $b_t$ would learn nothing from it, and the right panel of Figure~\ref{fig:minds} shows the resulting cloud.
+
+\begin{table}[t]
+  \centering
+  \small
+  \caption{The content of the claims. $r(b_t, A_t/N)$ is the per-town correlation between the share of ``going'' claims and the attendance share (mean $\pm$ s.d.\ over 12 seeds). Bluff and covert are the per-agent-night rates of each kind of lie. The final column is the standard deviation of attendance over the last 20 nights.}
+  \label{tab:information}
+  \begin{tabular}{rlccccc}
+    \toprule
+    $N$ & Condition & $r(b_t, A_t/N)$ & Mean $b_t$ & Bluff & Covert & SD$(A_t)$, late \\
+    \midrule
+    \input{table_information}
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Independence explains the deception index}
+
+If a claim is independent of the action and says ``going'' with probability $q$, the probability of a lie is
+\begin{equation}
+\Pr[\text{lie}] = q\,(1 - \pi) + (1 - q)\,\pi,
+\end{equation}
+where $\pi$ is the probability of going. At $q = \tfrac12$ this is exactly $\tfrac12$ for any $\pi$. That is what we observe (Figure~\ref{fig:deception}): the deception index is \rdecCtlLXXX, \rdecCtlC{} and \rdecCtlCL{} in silent towns, where nobody could be deceived, and \rdecBcLXXX, \rdecBcC{} and \rdecBcCL{} in broadcast towns.
+
+The same independence predicts the \emph{kind} of lie. Bluffs occur at rate $q(1-\pi)$ and covert visits at rate $(1-q)\pi$, so their mix depends only on attendance. In small towns most agents go, so covert visits dominate: \rcovertBcLXXX{} versus \rbluffBcLXXX{} at $N = 80$. In large towns most stay home, so bluffs dominate: \rbluffBcCL{} versus \rcovertBcCL{} at $N = 150$. The silent towns show the same pattern (Table~\ref{tab:information}). A naive reading of the broadcast data would call large towns ``bluffers'' and small towns ``sneaks''; in fact both are the arithmetic of uninformative claims.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/deception.pdf}
+  \caption{Deception index per night (mean across 12 seeds, 95\% band). The dotted line is $0.5$, the lie rate implied by claims that are independent of actions.}
+  \label{fig:deception}
+\end{figure}
+
+\subsection{Who lies is set by temperament, not strategy}
+
+Although the population-level lie rate is fixed, individuals differ. An agent's lie rate is strongly and negatively rank-correlated with its honesty trait (Figure~\ref{fig:minds}, left). The Spearman $\rho$ is \rrhoBcLXXX, \rrhoBcC{} and \rrhoBcCL{} in broadcast towns, and \rrhoCtlLXXX, \rrhoCtlC{} and \rrhoCtlCL{} in silent towns. The correlation is just as strong where lying cannot benefit anyone, so it reflects the claim--action coupling the agent was born with and never unlearns, not a strategic choice. Honest agents do end with a better public reputation in broadcast towns (a gap of \rrepgapBcC{} at $N = 100$). However, reputation here is computed directly from truthfulness, so the gap records who told the truth rather than any effect of reputation on behaviour.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/minds.pdf}
+  \caption{$N = 100$, all 12 seeds. Left: each agent's honesty trait against its realised lie rate. Right: the share of ``going'' claims against the share that went, one point per night.}
+  \label{fig:minds}
+\end{figure}
+
+\section{Discussion}
+
+\paragraph{Babbling as the learned outcome.}
+In El Farol, a credible ``going'' claim would push others to stay home, which is good for the speaker. That makes the claim not credible: every agent wants to say ``going'' whatever it does. Under such conflicting interests, cheap-talk theory predicts that informative messaging unravels and babbling remains \citep{crawford1982,farrell1996}. Our independent learners arrive at the same place without anyone imposing it. The speaker network gets no reward for informativeness, and the listeners have nothing to learn from noise. This matches the negotiation result of \citet{cao2018}, here at population scale and with zero shared parameters.
+
+\paragraph{Coordination does not need talk.}
+The silent towns already sit within a few seats of the comfort line, and their attendance approaches the mixed equilibrium as $N$ grows. Each agent's private history of attendance and payoffs carries the information that coordination needs. A public channel that adds nothing on top of it cannot help.
+
+\paragraph{Measuring deception in learning systems.}
+A deception index near $0.5$ in a talking population is easy to read as rampant, strategic lying. Our silent control shows the same number with no audience at all. Any study of learned deception needs a condition in which nobody can be deceived, and should test whether claims predict behaviour before interpreting the rate of mismatches.
+
+\paragraph{Limitations.}
+Claims are binary and the only published statistic is their mean, so agents cannot build reputations for specific individuals. The actors learn from counterfactual payoffs, which is a strong form of feedback. Each town runs for 100 nights, and longer horizons, richer messages, identity-tagged broadcasts or shared rewards could all produce informative talk. Our sign-flip tests have a resolution of $2/4096$ with 12 seeds, and the treatment effects we rule out are small but not zero.
+
+\section{Reproducibility and the interactive reference}\label{sec:repro}
+
+Every number, table and figure in this paper is generated from the raw output of the runs by \texttt{paper/analysis.py}. Each sweep runs with \texttt{experiment.py} and is analysed with \texttt{analyzer.py}. The reference engine is written in PyTorch and runs on CPU or GPU.
+
+We also ported the learning engine to TypeScript so that it runs entirely in a web browser, on a laptop or a phone, alongside an interactive three-dimensional view of the town. The port keeps the network architecture, initialisation, policy, replay, losses, target networks, gradient clipping and optimiser of the reference. The browser runs the original \texttt{analyzer.py} through Pyodide \citep{pyodide}. On 8 paired seeds (100 agents, 50 nights) the port and the PyTorch engine agree on mean attendance, deception, utility, rerouting and final TD loss, with all $|t| < 1.4$. Their random streams differ, so individual seeds are not bit-identical. Code and the live reference are available at \url{https://github.com/FABASTIC/ElFarolProblem} and \url{https://el-farol-rho.vercel.app}.
+
+\section{Conclusion}
+
+Give a population of independent deep Q-learners a public channel in the El Farol problem and they learn to ignore it. Their claims settle at a coin flip that is independent of what they do, so the channel changes neither coordination nor welfare. The apparent deception rate of one half is the arithmetic of uninformative talk, not strategy. Cheap talk at El Farol stays cheap.
+
+\bibliographystyle{plainnat}
+\bibliography{refs}
+
+\end{document}
