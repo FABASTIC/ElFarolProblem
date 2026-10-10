@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import CrowdScene from "../scene/CrowdScene";
 import SectionDock, { type DockHandle } from "./SectionDock";
+import { useElementSize } from "./useElementSize";
 import "../abstract.css";
 
 interface AbstractIntroProps {
@@ -81,19 +82,25 @@ function BarDiagram({ progress }: { progress: number }) {
 const SCHEMATIC = [44, 71, 38, 66, 79, 41, 55, 73, 47, 62, 58, 69, 52, 64, 57, 61, 59, 63, 56, 60];
 
 function Oscillation() {
-  const w = 1000;
-  const h = 260;
-  const x = (i: number) => (i / (SCHEMATIC.length - 1)) * w;
-  const y = (v: number) => h - (v / 100) * h;
+  const [ref, size] = useElementSize<HTMLDivElement>();
+  const w = Math.max(1, size.width);
+  const h = Math.max(1, size.height);
+  const pad = 6;
+  const x = (i: number) => pad + (i / (SCHEMATIC.length - 1)) * (w - pad * 2);
+  const y = (v: number) => pad + (1 - v / 100) * (h - pad * 2);
   const d = SCHEMATIC.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
   return (
-    <svg className="osc" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" role="img" aria-label="Schematic: attendance swings above and below the comfort line">
-      <line className="osc__line" x1={0} y1={y(60)} x2={w} y2={y(60)} />
-      <path className="osc__path" d={d} pathLength={1} />
-      {SCHEMATIC.map((v, i) => (
-        <circle key={i} className="osc__dot" data-over={v > 60} cx={x(i)} cy={y(v)} r={3.2} style={{ ["--k" as string]: i / SCHEMATIC.length } as CSSProperties} />
-      ))}
-    </svg>
+    <div ref={ref} className="osc">
+      {size.width > 0 && (
+        <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} role="img" aria-label="Schematic: attendance swings above and below the comfort line">
+          <line className="osc__line" x1={pad} y1={y(60)} x2={w - pad} y2={y(60)} />
+          <path className="osc__path" d={d} pathLength={1} />
+          {SCHEMATIC.map((v, i) => (
+            <circle key={i} className="osc__dot" data-over={v > 60} cx={x(i)} cy={y(v)} r={3.2} style={{ ["--k" as string]: i / (SCHEMATIC.length - 1) } as CSSProperties} />
+          ))}
+        </svg>
+      )}
+    </div>
   );
 }
 
@@ -355,7 +362,7 @@ export default function AbstractIntro({ leaving, onEnter }: AbstractIntroProps) 
             </h2>
             <p className="footnote" data-reveal style={{ ["--d" as string]: "400ms" } as CSSProperties}>
               If sixty or fewer show up, everyone at the bar has a good night. If more show up, the bar is packed and they wish they had stayed home.
-              After W. Brian Arthur, <em className="serif">Inductive Reasoning and Bounded Rationality</em>, 1994.
+              After W. Brian Arthur, <em className="cite">Inductive Reasoning and Bounded Rationality</em>, 1994.
             </p>
           </div>
           <div className="split__figure">

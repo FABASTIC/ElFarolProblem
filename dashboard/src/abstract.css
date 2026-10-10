@@ -1367,3 +1367,53 @@
     bottom: 16px;
   }
 }
+
+.serif {
+  font-family: inherit;
+  font-style: normal;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  color: var(--ink-2);
+}
+
+.cite {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: inherit;
+}
+
+.measured__big span {
+  font-family: inherit;
+  font-style: normal;
+  font-weight: inherit;
+}
+
+.osc {
+  position: relative;
+  width: 100%;
+  height: 22vh;
+}
+
+.osc svg {
+  position: absolute;
+  inset: 0;
+  display: block;
+  overflow: visible;
+}
+
+.osc__line,
+.osc__path,
+.osc__dot {
+  vector-effect: none;
+}
+
+.osc__path {
+  stroke-dasharray: 1 1;
+  stroke-dashoffset: calc(1 - min(1, var(--p, 0) * 1.4));
+}
+
+.osc__dot {
+  opacity: clamp(0, calc((min(1, var(--p, 0) * 1.4) - var(--k) * 0.98) * 14), 1);
+}

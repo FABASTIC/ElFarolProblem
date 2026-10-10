@@ -11,6 +11,54 @@ Every seed runs two towns side by side:
 
 **Live reference:** https://el-farol-rho.vercel.app
 
+## How a night works
+
+1. **Broadcast.** Each patron's speaker network reads its own memory and announces *going* or *staying*. In broadcast towns the share of "going" claims is published to everyone; in control towns nothing is.
+2. **Action.** Each actor network reads the same memory, plus the town's broadcast share and its own claim, and picks *bar* or *home*. A patron whose action contradicts its claim has lied: a **bluff** says going and stays home, and a **covert** goer says staying and goes.
+3. **Payoff.** On a 50 × 50 grid the bar is the central 10 × 10 block (100 seats), and the comfort line is 60:
+
+   | Outcome | Payoff |
+   | --- | --- |
+   | At the bar with 60 or fewer people | +1.0 |
+   | At the bar with more than 60 people | −1.0 |
+   | Home | +0.3 |
+
+4. **Learning.** Every patron trains only on its own replay memory.
+
+### The brains
+
+There is no shared model. Each patron owns two small networks with separate weights, separate optimiser state and a separate temperament (honesty, risk tolerance, competitiveness, learning rate, impulsiveness, exploration, discount), drawn from its seed.
+
+| | Speaker | Actor |
+| --- | --- | --- |
+| Input | 25 features: the last 8 nights' attendance and rewards, last strategy, comfort ratio, broadcast share, claim reliability, own truthfulness, channel flag | Speaker input + town broadcast share + own claim (27) |
+| Body | 2 × 32 ReLU | 2 × 32 ReLU |
+| Heads | Q(claim) | Q(home, bar), attendance forecast (sigmoid), honesty coupling on the claimed action |
+| TD target | two-night return + γ² · max Q′(s″) | r + γ · max Q′ of the speaker (s′) |
+
+The networks are trained with smooth-L1 TD loss plus an MSE forecast loss, softmax exploration with ε that decays every night, Adam, gradient clipping at 5, and a target-network sync every 8 nights. Each agent has 4,006 parameters.
+
+### What gets measured
+
+`analyzer.py` turns each sweep into `analytics_report.json`, which contains:
+
+- attendance against the comfort line, plus the pure (A\* = 60) and mixed (p\*) Nash benchmarks
+- deception index, strategy shares and their drift (KL, entropy)
+- ε-Nash regret and the Gini coefficient of accumulated utility
+- trust and reputation gaps between honest patrons and liars
+- paired control-versus-broadcast contrasts per seed, with bootstrap CIs and exact or Monte-Carlo permutation p-values
+
+## Repository layout
+
+| Path | What it is |
+| --- | --- |
+| `experiment.py` | The PyTorch engine: brain colony, sweep runner, live telemetry |
+| `analyzer.py` | Statistics and the analytics report |
+| `elfarol/` | Grid, agents, movement, metrics logger |
+| `dashboard/` | React + React Three Fiber dashboard and the launcher |
+| `dashboard/src/engine/` | The in-browser port of the brains |
+| `tests/` | pytest suite |
+
 ## Run it in the browser (any device)
 
 The live site opens on a replay of a PyTorch sweep. Press **New simulation** to train new towns on the visitor's own device, whether that's a phone, tablet or laptop. There's no install and no server.
@@ -21,6 +69,15 @@ The live site opens on a replay of a PyTorch sweep. Press **New simulation** to 
 - **Privacy:** nothing is uploaded, and results last until the tab is closed.
 
 Add `?engine=browser` to a local `npm run dev` URL to use the browser engine there as well.
+
+The port was validated against PyTorch (CPU) on 8 seeds × 2 conditions, with 100 agents and 50 nights. No metric differs significantly (all |Welch t| < 1.4):
+
+| Broadcast towns | PyTorch | Browser |
+| --- | --- | --- |
+| Mean attendance | 56.2 ± 0.9 | 56.0 ± 0.9 |
+| Deception index | 0.488 ± 0.013 | 0.489 ± 0.015 |
+| Mean utility | 0.263 ± 0.029 | 0.284 ± 0.031 |
+| Final TD loss | 0.223 ± 0.035 | 0.218 ± 0.033 |
 
 ## Run it on any machine with PyTorch
 
@@ -104,3 +161,7 @@ The snapshot copies `outputs/experiment` into `public/data` and strips local fil
 ```bash
 pytest
 ```
+
+## References
+
+W. Brian Arthur. *Inductive Reasoning and Bounded Rationality.* American Economic Review 84(2), 406–411, 1994.
