@@ -249,6 +249,15 @@ class TestNeuralSweep:
         assert "manipulation_wins" in minds["1"] and "honesty" in minds["1"]["traits"]
         assert len(torch.load(trial / "brains.pt")) == 12
 
+    def test_every_night_logs_a_finite_td_loss(self, tmp_path):
+        run_experiment(model_name="brains", base_output_dir=str(tmp_path), num_agents=10, num_epochs=5, grid_size=20, seeds=[3], device="cpu", hidden=8, memory=16, batch_size=4, updates=1, live_state=False)
+        for label in ("control", "delta2"):
+            with open(tmp_path / f"{label}_seed_3" / "epoch_metrics.csv", "r", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+            assert len(rows) == 5
+            losses = [float(row["td_loss"]) for row in rows]
+            assert all(loss >= 0.0 and loss == loss for loss in losses)
+
     def test_live_frame_carries_ratio_history(self, tmp_path):
         frames = []
 

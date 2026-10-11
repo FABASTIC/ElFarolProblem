@@ -67,6 +67,7 @@ EPOCH_FIELDS = [
     "deception_index", "truthfulness_ratio", "deception_count",
     "truthful_count", "broadcast_count", "broadcast_correlation",
     "town_broadcast_ratio", "actual_attendance", "intended_attendance",
+    "td_loss",
 ]
 
 
@@ -778,7 +779,10 @@ class NeuralRunner(SimulationRunner):
         for agent in agents:
             agent.in_bar_flag = bool(records.get(agent.id, {}).get("in_bar", self.grid.is_in_bar(agent.x, agent.y)))
         utilities = [records.get(a.id, {}).get("utility", 0.0) for a in agents]
+        trained_before = len(self.population.losses)
         self.population.observe(agents, brain_actions, epoch, utilities, rerouted)
+        if len(self.population.losses) > trained_before:
+            snapshot["td_loss"] = round(self.population.losses[-1], 6)
         self.agent_pool.clear_messages()
         remaining = self.pace_s - (time.perf_counter() - started)
         if remaining > 0:
@@ -1075,8 +1079,9 @@ def _make_epoch_hook(live, sentinel, trial, attempt, stop_file=None):
         snapshot = sentinel.sample() if sentinel is not None else None
         if snapshot is not None:
             live.vram = _vram_payload(snapshot, sentinel)
-        live.current = _live_frame(runner, trial, attempt, "running")
-        live.publish("running")
+        if live.enabled:
+            live.current = _live_frame(runner, trial, attempt, "running")
+            live.publish("running")
         _check_stop(stop_file)
     return hook
 

@@ -210,3 +210,22 @@ class TestReportEndToEnd:
         with patch.object(sys, "argv", ["analyzer.py", "--experiment-dir", str(sweep), "--bootstrap", "20", "--quiet"]):
             main()
         assert (sweep / "analytics_report.json").exists()
+
+    def test_epoch_window_restricts_every_trial(self, sweep):
+        report = build_report(str(sweep), bootstrap=10, epoch_range=(4, None))
+        assert report["parameters"]["epoch_range"] == [4, None]
+        assert report["source"]["trials_analyzed"] == 4
+        for trial in report["trials"]:
+            assert trial["epochs"] == 2
+            assert trial["series"]["epoch"] == [4, 5]
+        full = build_report(str(sweep), bootstrap=10)
+        assert all(trial["epochs"] == 6 for trial in full["trials"])
+
+    def test_cli_epoch_window_writes_a_separate_report(self, sweep, tmp_path):
+        target = tmp_path / "late.json"
+        with patch.object(sys, "argv", ["analyzer.py", "--experiment-dir", str(sweep), "--bootstrap", "10", "--epoch-min", "3", "--output", str(target), "--quiet"]):
+            main()
+        with open(target, "r", encoding="utf-8") as f:
+            late = json.load(f)
+        assert late["parameters"]["epoch_range"] == [3, None]
+        assert all(trial["epochs"] == 3 for trial in late["trials"])

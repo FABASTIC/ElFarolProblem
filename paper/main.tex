@@ -25,7 +25,7 @@
 \maketitle
 
 \begin{abstract}
-Arthur's El Farol Bar problem asks how a population of independent agents can coordinate on a resource that is only worth using when few others use it. We add a public cheap-talk channel: every night each agent first announces whether it will go, and then decides whether it actually goes. Each agent is an isolated pair of small neural networks, a speaker and an actor, trained by deep Q-learning on its own experience, with its own weights, optimiser and temperament. In a paired-seed experiment with 12 seeds, 100 nights and populations of 80, 100 and 150 agents, opening the channel changes none of the outcomes we measure. Attendance, welfare, distance from equilibrium, inequality and strategy entropy all stay the same: of \rnTests{} contrasts, \rnNominal{} reach nominal significance and none survive false-discovery-rate control (smallest $q = \rminQ$). The reason is visible in the messages themselves. The share of agents claiming they will go stays at one half and is uncorrelated with how many actually go ($|r| < 0.06$ at every population size), so the claims carry no information. Because claims are independent of actions, the measured lie rate sits near $0.5$ whether or not anyone can hear, and whether a lie is a bluff or a covert visit is fixed by attendance alone. The lie rate of an individual agent is predicted by its honesty prior (Spearman $\rho \approx -0.5$ to $-0.64$) and not by strategy. Independent learners in this congestion game settle into a babbling outcome, which is consistent with cheap-talk theory when interests conflict. We release the full system, including a browser-based reproduction of the learning engine that we validated statistically against the PyTorch reference.
+Arthur's El Farol Bar problem asks how a population of independent agents can coordinate on a resource that is only worth using when few others use it. We add a public cheap-talk channel: every night each agent first announces whether it will go, and then decides whether it actually goes. Each agent is an isolated pair of small neural networks, a speaker and an actor, trained by deep Q-learning on its own experience, with its own weights, optimiser and temperament. In a paired-seed experiment with 12 seeds, 100 nights and populations of 80, 100 and 150 agents, opening the channel changes none of the outcomes we measure. Attendance, welfare, distance from equilibrium, inequality and strategy entropy all stay the same: of \rnTestsShort{} contrasts, \rnNominalShort{} reach nominal significance and none survive false-discovery-rate control (smallest $q = \rminQShort$). The reason is visible in the messages themselves. The share of agents claiming they will go stays at one half and is uncorrelated with how many actually go ($|r| < 0.06$ at every population size), so the claims carry no information. Because claims are independent of actions, the measured lie rate sits near $0.5$ whether or not anyone can hear, and whether a lie is a bluff or a covert visit is fixed by attendance alone. The lie rate of an individual agent is predicted by its honesty prior (Spearman $\rho \approx -0.5$ to $-0.64$) and not by strategy. Independent learners in this congestion game settle into a babbling outcome, which is consistent with cheap-talk theory when interests conflict. We release the full system, including a browser-based reproduction of the learning engine that we validated statistically against the PyTorch reference.
 \end{abstract}
 
 \section{Introduction}
@@ -101,32 +101,40 @@ There is no shared model. Agent $i$ owns two multilayer perceptrons, each with t
 
 \section{Experimental design}\label{sec:design}
 
-We ran $N \in \{80, 100, 150\}$. All three exceed $T$, so overcrowding is possible and the dilemma is live. For each $N$ we ran seeds $1, \dots, 12$ in both conditions, 72 towns of 100 nights each. A seed fixes the initial positions and temperaments, so the silent and broadcast towns of a seed differ only in the channel. Every contrast is therefore paired by seed.
+We ran $N \in \{80, 100, 150\}$. All three exceed $T$, so overcrowding is possible and the dilemma is live. For each $N$ we ran seeds $1, \dots, 12$ in both conditions, 72 towns of \rnightsLong{} nights each. A seed fixes the initial positions, the temperaments and every later random draw, so the silent and broadcast towns of a seed differ only in the channel, and every contrast is paired by seed. Because the exploration schedule depends only on the night index, the first \rnightsShort{} nights of each town are identical to a separate \rnightsShort-night run with the same seed; we checked this for all 72 towns.
 
-\paragraph{Measures.} For each town we compute the mean attendance, deception index and utility. We also compute the mean absolute gap $|A_t - A^*|$, the per-agent ex-post regret (the gain from a unilateral deviation), and efficiency, which is realised welfare as a share of the welfare optimum. Further measures are the max-normalised Gini coefficient of final cumulative utility, and the entropy of the population distribution over the four behavioural strategies (honest go, honest stay, bluff, covert).
+\paragraph{Analysis windows.} A short horizon cannot separate agents that have learned to ignore the channel from agents that have not yet learned to use it. We therefore analyse three windows of the same runs: the first \rnightsShort{} nights, all \rnightsLong{} nights, and the last \rnightsLate{} nights (nights \rlateStart--\rnightsLong), which measure behaviour after learning has settled. Each window is analysed separately.
 
-\paragraph{Inference.} Treatment effects are broadcast minus silent. The 95\% intervals come from a hierarchical percentile bootstrap \citep{efron1993}: seeds are resampled, then agents or circular blocks of nights within each seed. $p$-values come from the exact two-sided sign-flip test over the 12 seed-level paired differences \citep{fisher1935}. We report all \rnTests{} contrasts (22 metrics $\times$ 3 population sizes) with Benjamini--Hochberg $q$-values.
+\paragraph{Measures.} For each town and window we compute the mean attendance, deception index and utility. We also compute the mean absolute gap $|A_t - A^*|$, the per-agent ex-post regret (the gain from a unilateral deviation), and efficiency, which is realised welfare as a share of the welfare optimum. Further measures are the max-normalised Gini coefficient of the utility accumulated within the window, and the entropy of the population distribution over the four behavioural strategies (honest go, honest stay, bluff, covert). Every night we also log the attendance, mean utility, deception index, share of ``going'' claims and the mean TD loss over the agents' updates. Learning curves show a \rsmooth-night moving average, and the claim--attendance correlation is computed over a sliding \rcorrWindow-night window.
+
+\paragraph{Inference.} Treatment effects are broadcast minus silent. The 95\% intervals come from a hierarchical percentile bootstrap \citep{efron1993}: seeds are resampled, then agents or circular blocks of nights within each seed. $p$-values come from the exact two-sided sign-flip test over the 12 seed-level paired differences \citep{fisher1935}. In each window we report all \rnTestsLate{} contrasts (22 metrics $\times$ 3 population sizes) with Benjamini--Hochberg $q$-values computed within that window. The bands on learning curves are 95\% percentile bootstrap intervals over seeds.
 
 \section{Results}\label{sec:results}
 
-\subsection{Coordination without the channel is already near equilibrium, and the channel changes nothing}
+\subsection{Learning over \rnightsLong{} nights}
 
-Figure~\ref{fig:attendance} shows attendance over the 100 nights. In both conditions the population quickly settles into noisy oscillation just below the comfort line. Mean attendance is \rattCtlLXXX, \rattCtlC{} and \rattCtlCL{} in the silent condition, against \rattBcLXXX, \rattBcC{} and \rattBcCL{} with the channel open. As $N$ grows, attendance approaches the mixed-equilibrium prediction $Np^*$. The two conditions are indistinguishable at every population size.
+Figure~\ref{fig:learning} shows how the towns learn. Attendance rises in the first few hundred nights and then holds just below the comfort line. Averaged over both conditions, the distance from the pure equilibrium $|A_t - A^*|$ falls from \rgapEarlyLXXX, \rgapEarlyC{} and \rgapEarlyCL{} seats in the first \rnightsShort{} nights to \rgapLateLXXX, \rgapLateC{} and \rgapLateCL{} seats in the last \rnightsLate{} ($N = 80$, 100 and 150). Late attendance is \rattLateCtlLXXX, \rattLateCtlC{} and \rattLateCtlCL{} in silent towns and \rattLateBcLXXX, \rattLateBcC{} and \rattLateBcCL{} in broadcast towns, against $A^* = 60$ and $Np^* = \rmixedALXXX$, \rmixedAC{} and \rmixedACL.
+
+The TD loss does not fall steadily. It drops in the first nights, rises again over the next few hundred, and then drifts down slowly. Each agent's targets depend on what every other agent does, so the loss measures fit to a moving target rather than convergence. Late in training, broadcast towns have a higher TD loss than silent towns by \rlossPctLXXX\%, \rlossPctC\% and \rlossPctCL\% ($p = \rlossPLXXX$, $\rlossPC$ and $\rlossPCL$): the published claim share is one more noisy input for the value networks to fit. This difference does not reach behaviour (Section~\ref{sec:null}).
+
+The deception index stays at one half for the whole run, and the claim--attendance correlation stays near zero. Over the last \rnightsLate{} nights the sliding-window correlation averages \rrollCorrLateBcLXXX, \rrollCorrLateBcC{} and \rrollCorrLateBcCL{} in broadcast towns and \rrollCorrLateCtlLXXX, \rrollCorrLateCtlC{} and \rrollCorrLateCtlCL{} in silent towns.
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=\linewidth]{figures/attendance.pdf}
-  \caption{Attendance per night (mean across 12 seeds, 95\% band) in silent and broadcast towns. The dashed line is the comfort threshold $T = A^* = 60$.}
-  \label{fig:attendance}
+  \includegraphics[width=\linewidth]{figures/learning.pdf}
+  \caption{Learning over \rnightsLong{} nights: mean across 12 seeds with a 95\% seed-bootstrap band, after a \rsmooth-night moving average (the TD loss is on a log scale). Bottom row: correlation between the share of ``going'' claims and the attendance share over a sliding \rcorrWindow-night window. In the attendance row the dashed line is $A^* = T = 60$ and the dotted line is $Np^*$. The shaded region marks the last \rnightsLate{} nights.}
+  \label{fig:learning}
 \end{figure}
 
-Table~\ref{tab:contrast} reports the paired contrasts. No effect on attendance, utility, distance to equilibrium, regret, efficiency, inequality or strategy entropy is distinguishable from zero after correction. All differences are small: the largest relative change in mean utility is under 4\%. Across all \rnTests{} contrasts, \rnNominal{} have $p < 0.05$, they point in inconsistent directions across population sizes, and none survives false-discovery-rate control (smallest $q = \rminQ$). Figure~\ref{fig:contrast} shows the corresponding intervals.
+\subsection{The channel changes nothing, early or late}\label{sec:null}
+
+Table~\ref{tab:contrast} reports the paired contrasts over the last \rnightsLate{} nights. No effect on attendance, utility, distance to equilibrium, regret, efficiency, inequality or strategy entropy is distinguishable from zero after correction. Of the \rnTestsLate{} contrasts, \rnNominalLate{} has $p < 0.05$ and none survives false-discovery-rate control (smallest $q = \rminQLate$). The same holds over all \rnightsLong{} nights (\rnNominalLong{} nominal, none surviving, smallest $q = \rminQLong$) and over the first \rnightsShort{} nights (\rnNominalShort{} nominal, none surviving, smallest $q = \rminQShort$); Appendix~\ref{app:tables} gives both tables. Figure~\ref{fig:contrast} shows the intervals for all three windows. The largest relative change in mean utility in the late window is \rmaxUtilPctLate\%.
 
 \begin{table}[t]
   \centering
   \small
   \setlength{\tabcolsep}{3pt}
-  \caption{Silent (S) versus broadcast (B) towns, with the paired difference $\Delta = $ B $-$ S, the exact sign-flip $p$, and the Benjamini--Hochberg $q$ over all \rnTests{} contrasts. Means are over 12 seeds.}
+  \caption{Silent (S) versus broadcast (B) towns over the last \rnightsLate{} of \rnightsLong{} nights, with the paired difference $\Delta = $ B $-$ S, the exact sign-flip $p$, and the Benjamini--Hochberg $q$ over all \rnTestsLate{} contrasts in this window. Means are over 12 seeds.}
   \label{tab:contrast}
   \resizebox{\linewidth}{!}{%
   \begin{tabular}{l ccccc ccccc ccccc}
@@ -135,29 +143,32 @@ Table~\ref{tab:contrast} reports the paired contrasts. No effect on attendance, 
     \cmidrule(lr){2-6}\cmidrule(lr){7-11}\cmidrule(lr){12-16}
     Metric & S & B & $\Delta$ & $p$ & $q$ & S & B & $\Delta$ & $p$ & $q$ & S & B & $\Delta$ & $p$ & $q$ \\
     \midrule
-    \input{table_contrast}
+    \input{table_contrast_late}
   \end{tabular}}
 \end{table}
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{figures/contrast.pdf}
-  \caption{Effect of opening the channel, as a percentage of the silent mean, with 95\% hierarchical bootstrap intervals, for each population size.}
+  \caption{Effect of opening the channel, as a percentage of the silent mean, with 95\% hierarchical bootstrap intervals, for each population size and analysis window.}
   \label{fig:contrast}
 \end{figure}
 
 \subsection{The claims carry no information}
 
-Why does a public channel do nothing? Table~\ref{tab:information} answers by looking at the messages. In every condition and at every size, the share of agents claiming ``going'' averages one half. Across nights it is uncorrelated with the share that actually goes: the per-town Pearson correlation is \rcorrBcLXXX, \rcorrBcC{} and \rcorrBcCL{} with the channel open, against \rcorrCtlLXXX, \rcorrCtlC{} and \rcorrCtlCL{} when nobody listens. The paired differences are not significant ($p = \rcorrPLXXX$, $\rcorrPC$ and $\rcorrPCL$). An agent that conditioned on $b_t$ would learn nothing from it, and the right panel of Figure~\ref{fig:minds} shows the resulting cloud.
+Why does a public channel do nothing? Table~\ref{tab:information} answers by looking at the messages. In every condition and at every size, the share of agents claiming ``going'' averages one half, and it is uncorrelated with the share that actually goes. Over the first \rnightsShort{} nights the per-town correlation is \rcorrBcShortLXXX, \rcorrBcShortC{} and \rcorrBcShortCL{} with the channel open, against \rcorrCtlShortLXXX, \rcorrCtlShortC{} and \rcorrCtlShortCL{} when nobody listens. Over the last \rnightsLate{} nights it is \rcorrBcLateLXXX, \rcorrBcLateC{} and \rcorrBcLateCL{}, against \rcorrCtlLateLXXX, \rcorrCtlLateC{} and \rcorrCtlLateCL. None of the paired differences is significant (late window: $p = \rcorrPLateLXXX$, $\rcorrPLateC$ and $\rcorrPLateCL$). Broadcast towns lean slightly positive late in training, but the effect is small, inconsistent across seeds and not distinguishable from zero. An agent that conditioned on $b_t$ would learn almost nothing from it, and the right panel of Figure~\ref{fig:minds} shows the resulting cloud.
 
 \begin{table}[t]
   \centering
   \small
-  \caption{The content of the claims. $r(b_t, A_t/N)$ is the per-town correlation between the share of ``going'' claims and the attendance share (mean $\pm$ s.d.\ over 12 seeds). Bluff and covert are the per-agent-night rates of each kind of lie. The final column is the standard deviation of attendance over the last 20 nights.}
+  \setlength{\tabcolsep}{4pt}
+  \caption{The content of the claims. $r(b_t, A_t/N)$ is the per-town correlation between the share of ``going'' claims and the attendance share (mean $\pm$ s.d.\ over 12 seeds), over the first \rnightsShort{} nights and over the last \rnightsLate{} of \rnightsLong. The remaining columns refer to the last \rnightsLate{} nights: the mean claim share, the per-agent-night rates of each kind of lie, and the standard deviation of attendance.}
   \label{tab:information}
-  \begin{tabular}{rlccccc}
+  \begin{tabular}{rlcccccc}
     \toprule
-    $N$ & Condition & $r(b_t, A_t/N)$ & Mean $b_t$ & Bluff & Covert & SD$(A_t)$, late \\
+    & & \multicolumn{2}{c}{$r(b_t, A_t/N)$} & \multicolumn{4}{c}{Last \rnightsLate{} nights} \\
+    \cmidrule(lr){3-4}\cmidrule(lr){5-8}
+    $N$ & Condition & First \rnightsShort & Last \rnightsLate & Mean $b_t$ & Bluff & Covert & SD$(A_t)$ \\
     \midrule
     \input{table_information}
   \end{tabular}
@@ -169,25 +180,18 @@ If a claim is independent of the action and says ``going'' with probability $q$,
 \begin{equation}
 \Pr[\text{lie}] = q\,(1 - \pi) + (1 - q)\,\pi,
 \end{equation}
-where $\pi$ is the probability of going. At $q = \tfrac12$ this is exactly $\tfrac12$ for any $\pi$. That is what we observe (Figure~\ref{fig:deception}): the deception index is \rdecCtlLXXX, \rdecCtlC{} and \rdecCtlCL{} in silent towns, where nobody could be deceived, and \rdecBcLXXX, \rdecBcC{} and \rdecBcCL{} in broadcast towns.
+where $\pi$ is the probability of going. At $q = \tfrac12$ this is exactly $\tfrac12$ for any $\pi$. That is what we observe. Over the last \rnightsLate{} nights the deception index is \rdecCtlLateLXXX, \rdecCtlLateC{} and \rdecCtlLateCL{} in silent towns, where nobody could be deceived, and \rdecBcLateLXXX, \rdecBcLateC{} and \rdecBcLateCL{} in broadcast towns. Over the first \rnightsShort{} nights it is \rdecCtlShortLXXX, \rdecCtlShortC{} and \rdecCtlShortCL{} against \rdecBcShortLXXX, \rdecBcShortC{} and \rdecBcShortCL.
 
-The same independence predicts the \emph{kind} of lie. Bluffs occur at rate $q(1-\pi)$ and covert visits at rate $(1-q)\pi$, so their mix depends only on attendance. In small towns most agents go, so covert visits dominate: \rcovertBcLXXX{} versus \rbluffBcLXXX{} at $N = 80$. In large towns most stay home, so bluffs dominate: \rbluffBcCL{} versus \rcovertBcCL{} at $N = 150$. The silent towns show the same pattern (Table~\ref{tab:information}). A naive reading of the broadcast data would call large towns ``bluffers'' and small towns ``sneaks''; in fact both are the arithmetic of uninformative claims.
+The same independence predicts the \emph{kind} of lie. Bluffs occur at rate $q(1-\pi)$ and covert visits at rate $(1-q)\pi$, so their mix depends only on attendance. In small towns most agents go, so covert visits dominate: \rcovertBcLateLXXX{} versus \rbluffBcLateLXXX{} at $N = 80$ in the last \rnightsLate{} nights. In large towns most stay home, so bluffs dominate: \rbluffBcLateCL{} versus \rcovertBcLateCL{} at $N = 150$. The silent towns show the same pattern (Table~\ref{tab:information}). A naive reading of the broadcast data would call large towns ``bluffers'' and small towns ``sneaks''; in fact both are the arithmetic of uninformative claims.
 
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=\linewidth]{figures/deception.pdf}
-  \caption{Deception index per night (mean across 12 seeds, 95\% band). The dotted line is $0.5$, the lie rate implied by claims that are independent of actions.}
-  \label{fig:deception}
-\end{figure}
+\subsection{Who lies is set by temperament at first, and then by nothing}
 
-\subsection{Who lies is set by temperament, not strategy}
-
-Although the population-level lie rate is fixed, individuals differ. An agent's lie rate is strongly and negatively rank-correlated with its honesty trait (Figure~\ref{fig:minds}, left). The Spearman $\rho$ is \rrhoBcLXXX, \rrhoBcC{} and \rrhoBcCL{} in broadcast towns, and \rrhoCtlLXXX, \rrhoCtlC{} and \rrhoCtlCL{} in silent towns. The correlation is just as strong where lying cannot benefit anyone, so it reflects the claim--action coupling the agent was born with and never unlearns, not a strategic choice. Honest agents do end with a better public reputation in broadcast towns (a gap of \rrepgapBcC{} at $N = 100$). However, reputation here is computed directly from truthfulness, so the gap records who told the truth rather than any effect of reputation on behaviour.
+Early in training, an agent's lie rate is strongly and negatively rank-correlated with its honesty trait (Figure~\ref{fig:minds}, left). Over the first \rnightsShort{} nights the Spearman $\rho$ is \rrhoBcShortLXXX, \rrhoBcShortC{} and \rrhoBcShortCL{} in broadcast towns, and \rrhoCtlShortLXXX, \rrhoCtlShortC{} and \rrhoCtlShortCL{} in silent towns. The correlation is just as strong where lying cannot benefit anyone, so it reflects the claim--action coupling each agent is initialised with, not a strategic choice. Training removes it. Over the last \rnightsLate{} nights $\rho$ is \rrhoBcLateLXXX, \rrhoBcLateC{} and \rrhoBcLateCL{} in broadcast towns and \rrhoCtlLateLXXX, \rrhoCtlLateC{} and \rrhoCtlLateCL{} in silent towns (Figure~\ref{fig:minds}, centre): every agent ends up lying about half the time, whatever its temperament. Honest agents still end with a slightly better public reputation in broadcast towns (a gap of \rrepgapBcLateLXXX, \rrepgapBcLateC{} and \rrepgapBcLateCL{} over the last \rnightsLate{} nights). Reputation here is computed directly from truthfulness, so the gap records who told the truth rather than any effect of reputation on behaviour.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{figures/minds.pdf}
-  \caption{$N = 100$, all 12 seeds. Left: each agent's honesty trait against its realised lie rate. Right: the share of ``going'' claims against the share that went, one point per night.}
+  \caption{$N = 100$, all 12 seeds. Left and centre: each agent's honesty trait against its lie rate over the first \rnightsShort{} nights and over the last \rnightsLate{} of \rnightsLong. Right: the share of ``going'' claims against the share that went over the last \rnightsLate{} nights, one point per night.}
   \label{fig:minds}
 \end{figure}
 
@@ -217,5 +221,43 @@ Give a population of independent deep Q-learners a public channel in the El Faro
 
 \bibliographystyle{plainnat}
 \bibliography{refs}
+
+\appendix
+
+\section{Contrast tables for the other windows}\label{app:tables}
+
+\begin{table}[h]
+  \centering
+  \small
+  \setlength{\tabcolsep}{3pt}
+  \caption{As Table~\ref{tab:contrast}, over all \rnightsLong{} nights. $q$ is computed over the \rnTestsLong{} contrasts in this window.}
+  \label{tab:contrast-long}
+  \resizebox{\linewidth}{!}{%
+  \begin{tabular}{l ccccc ccccc ccccc}
+    \toprule
+    & \multicolumn{5}{c}{$N = 80$} & \multicolumn{5}{c}{$N = 100$} & \multicolumn{5}{c}{$N = 150$} \\
+    \cmidrule(lr){2-6}\cmidrule(lr){7-11}\cmidrule(lr){12-16}
+    Metric & S & B & $\Delta$ & $p$ & $q$ & S & B & $\Delta$ & $p$ & $q$ & S & B & $\Delta$ & $p$ & $q$ \\
+    \midrule
+    \input{table_contrast_long}
+  \end{tabular}}
+\end{table}
+
+\begin{table}[h]
+  \centering
+  \small
+  \setlength{\tabcolsep}{3pt}
+  \caption{As Table~\ref{tab:contrast}, over the first \rnightsShort{} nights. $q$ is computed over the \rnTestsShort{} contrasts in this window.}
+  \label{tab:contrast-short}
+  \resizebox{\linewidth}{!}{%
+  \begin{tabular}{l ccccc ccccc ccccc}
+    \toprule
+    & \multicolumn{5}{c}{$N = 80$} & \multicolumn{5}{c}{$N = 100$} & \multicolumn{5}{c}{$N = 150$} \\
+    \cmidrule(lr){2-6}\cmidrule(lr){7-11}\cmidrule(lr){12-16}
+    Metric & S & B & $\Delta$ & $p$ & $q$ & S & B & $\Delta$ & $p$ & $q$ & S & B & $\Delta$ & $p$ & $q$ \\
+    \midrule
+    \input{table_contrast_short}
+  \end{tabular}}
+\end{table}
 
 \end{document}
