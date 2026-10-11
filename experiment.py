@@ -1079,8 +1079,9 @@ def _make_epoch_hook(live, sentinel, trial, attempt, stop_file=None):
         snapshot = sentinel.sample() if sentinel is not None else None
         if snapshot is not None:
             live.vram = _vram_payload(snapshot, sentinel)
-        live.current = _live_frame(runner, trial, attempt, "running")
-        live.publish("running")
+        if live.enabled:
+            live.current = _live_frame(runner, trial, attempt, "running")
+            live.publish("running")
         _check_stop(stop_file)
     return hook
 
