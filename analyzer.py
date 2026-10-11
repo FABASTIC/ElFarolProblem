@@ -413,9 +413,23 @@ def discover_trials(experiment_dir):
     return trials, comparison
 
 
-def load_trial(trial):
-    epochs_df = pd.read_csv(trial["epoch_csv"])
-    agents_df = pd.read_csv(trial["agent_csv"])
+def clip_epochs(frame, epoch_range):
+    if epoch_range is None or "epoch" not in frame.columns:
+        return frame
+    lo, hi = epoch_range
+    mask = pd.Series(True, index=frame.index)
+    if lo is not None:
+        mask &= frame["epoch"] >= lo
+    if hi is not None:
+        mask &= frame["epoch"] <= hi
+    return frame[mask].reset_index(drop=True)
+
+
+def load_trial(trial, epoch_range=None):
+    epochs_df = clip_epochs(pd.read_csv(trial["epoch_csv"]), epoch_range)
+    agents_df = clip_epochs(pd.read_csv(trial["agent_csv"]), epoch_range)
+    if epoch_range is not None:
+        agents_df = agents_df.drop(columns=["cumulative_utility"], errors="ignore")
     required = ("epoch", "agent_id", "utility", "stated_intention")
     missing = [c for c in required if c not in agents_df.columns]
     if missing:
@@ -499,12 +513,12 @@ def spearman(x, y):
     return float(np.corrcoef(rx, ry)[0, 1])
 
 
-def analyze_minds(trial):
+def analyze_minds(trial, epoch_range=None):
     trace_path = os.path.join(trial["path"], "mind_trace.csv")
     minds_path = os.path.join(trial["path"], "minds.json")
     if not (os.path.isfile(trace_path) and os.path.isfile(minds_path)):
         return None
-    trace = pd.read_csv(trace_path)
+    trace = clip_epochs(pd.read_csv(trace_path), epoch_range)
     minds = _read_json(minds_path) or {}
     if trace.empty or not minds:
         return None
@@ -927,7 +941,7 @@ def _phase_summary(series):
     }
 
 
-def build_report(experiment_dir, bootstrap=DEFAULT_BOOTSTRAP, rng_seed=DEFAULT_RNG_SEED, window_fraction=DEFAULT_WINDOW_FRACTION):
+def build_report(experiment_dir, bootstrap=DEFAULT_BOOTSTRAP, rng_seed=DEFAULT_RNG_SEED, window_fraction=DEFAULT_WINDOW_FRACTION, epoch_range=None):
     rng = np.random.default_rng(rng_seed)
     trials, comparison = discover_trials(experiment_dir)
     warnings = []
@@ -940,13 +954,13 @@ def build_report(experiment_dir, bootstrap=DEFAULT_BOOTSTRAP, rng_seed=DEFAULT_R
             warnings.append(f"{trial['trial']}: status '{trial['status']}' excluded from inference")
             continue
         try:
-            data = load_trial(trial)
+            data = load_trial(trial, epoch_range)
         except (ValueError, OSError, KeyError, IndexError) as exc:
             warnings.append(f"{trial['trial']}: unreadable trace ({exc})")
             continue
         summary, replicates_by_metric, counts = analyze_trial(data, rng, bootstrap, window_fraction)
         try:
-            summary["minds"] = analyze_minds(trial)
+            summary["minds"] = analyze_minds(trial, epoch_range)
         except (ValueError, KeyError, OSError) as exc:
             summary["minds"] = None
             warnings.append(f"{trial['trial']}: mind trace unreadable ({exc})")
@@ -1073,6 +1087,7 @@ def build_report(experiment_dir, bootstrap=DEFAULT_BOOTSTRAP, rng_seed=DEFAULT_R
             "bootstrap_replicates": bootstrap,
             "rng_seed": rng_seed,
             "window_fraction": window_fraction,
+            "epoch_range": list(epoch_range) if epoch_range is not None else None,
             "smoothing_alpha": SMOOTHING_ALPHA,
             "strategies": list(STRATEGIES),
             "strategy_definitions": STRATEGY_DEFINITIONS,
