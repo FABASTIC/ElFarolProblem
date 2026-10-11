@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use this software or the paper, please cite it as below."
+title: "Cheap Talk at El Farol: Independent Deep Q-Learners Learn to Babble, Not to Deceive"
+authors:
+  - family-names: Malhotra
+    given-names: Vairaj
+    affiliation: Independent researcher
+repository-code: "https://github.com/FABASTIC/ElFarolProblem"
+url: "https://el-farol-rho.vercel.app"
+license: MIT
+type: software
+keywords:
+  - El Farol Bar problem
+  - cheap talk
+  - multi-agent reinforcement learning
+  - deep Q-learning
+  - minority game
+preferred-citation:
+  type: article
+  title: "Cheap Talk at El Farol: Independent Deep Q-Learners Learn to Babble, Not to Deceive"
+  authors:
+    - family-names: Malhotra
+      given-names: Vairaj
+      affiliation: Independent researcher
+  year: 2026
+  url: "https://github.com/FABASTIC/ElFarolProblem"
