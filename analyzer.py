@@ -1169,14 +1169,18 @@ def main():
     parser.add_argument("--bootstrap", type=int, default=DEFAULT_BOOTSTRAP)
     parser.add_argument("--rng-seed", type=int, default=DEFAULT_RNG_SEED)
     parser.add_argument("--window-fraction", type=float, default=DEFAULT_WINDOW_FRACTION)
+    parser.add_argument("--epoch-min", type=int, default=None)
+    parser.add_argument("--epoch-max", type=int, default=None)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
+    epoch_range = (args.epoch_min, args.epoch_max) if args.epoch_min is not None or args.epoch_max is not None else None
     report = build_report(
         args.experiment_dir,
         bootstrap=max(1, args.bootstrap),
         rng_seed=args.rng_seed,
         window_fraction=min(max(args.window_fraction, 0.01), 1.0),
+        epoch_range=epoch_range,
     )
     output_path = args.output or os.path.join(args.experiment_dir, REPORT_FILENAME)
     write_report(report, output_path)
