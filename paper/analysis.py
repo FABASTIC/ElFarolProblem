@@ -414,7 +414,7 @@ def main():
             name = macro_name(key)
             if any(ch.isdigit() for ch in name):
                 raise ValueError(f"macro name {name} contains a digit")
-            text = f"\\ensuremath{{-}}{value[1:]}" if value.startswith("-") else value
+            text = f"\\ensuremath{{-}}{value[1:]}" if value.startswith("-") and value[1:2].isdigit() else value
             f.write(f"\\newcommand{{\\r{name}}}{{{text}}}\n")
     print(json.dumps(macros, indent=1))
 
