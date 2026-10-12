@@ -97,6 +97,7 @@ The networks are trained with smooth-L1 TD loss plus an MSE forecast loss, softm
 | `elfarol/` | Grid, agents, movement, metrics logger |
 | `dashboard/` | React + React Three Fiber dashboard and the launcher |
 | `dashboard/src/engine/` | The in-browser port of the brains |
+| `paper/` | The paper, its sweep script and `analysis.py`, which generates every number, table and figure |
 | `tests/` | pytest suite |
 
 ## Run it in the browser (any device)
