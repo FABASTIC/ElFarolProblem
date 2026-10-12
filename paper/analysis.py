@@ -284,6 +284,9 @@ def main():
             macros[f"rollCorrLate{tag}{n}"] = signed(float(np.nanmean(corr[:, -LATE:])))
         macros[f"gapEarly{n}"] = f"{np.mean(early):.2f}"
         macros[f"gapLate{n}"] = f"{np.mean(late):.2f}"
+        late_loss = {c: np.nanmean(curves[(n, c)]["loss"][:, -LATE:], axis=1) for c in CONDITIONS}
+        macros[f"lossP{n}"] = fmt_p(sign_flip_p(late_loss["delta2"] - late_loss["control"]))
+        macros[f"lossPct{n}"] = f"{(late_loss['delta2'].mean() / late_loss['control'].mean() - 1) * 100:.1f}"
     late_roll = [abs(float(np.nanmean(curves[(n, c)]["corr"][:, -LATE:]))) for n in SIZES for c in CONDITIONS]
     macros["maxAbsRollCorrLate"] = f"{max(late_roll):.3f}"
 
