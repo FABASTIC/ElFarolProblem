@@ -303,6 +303,7 @@ def main():
     for col, n in enumerate(SIZES):
         for row, (key, label, smooth) in enumerate(panels):
             ax = grid[row, col]
+            span = []
             for condition in CONDITIONS:
                 matrix = curves[(n, condition)][key]
                 if smooth:
@@ -310,6 +311,16 @@ def main():
                 mean, lo, hi = seed_band(matrix, rng)
                 ax.fill_between(x, lo, hi, color=COLOR[condition], alpha=0.2, linewidth=0)
                 ax.plot(x, mean, color=COLOR[condition], linewidth=0.9, label=LABEL[condition])
+                span.extend([np.nanmin(lo[SMOOTH:]), np.nanmax(hi[SMOOTH:])])
+            if key == "attendance":
+                span.extend([THRESHOLD, n * nash_equilibrium(n, THRESHOLD)["mixed_go_probability"]])
+            if key == "corr":
+                span.append(0.0)
+            pad = (max(span) - min(span)) * 0.08
+            if key == "loss":
+                ax.set_ylim(min(span) * 0.92, max(span) * 1.08)
+            else:
+                ax.set_ylim(min(span) - pad, max(span) + pad)
             if key == "attendance":
                 ax.axhline(THRESHOLD, color="0.2", linestyle="--", linewidth=0.7)
                 ax.axhline(n * nash_equilibrium(n, THRESHOLD)["mixed_go_probability"], color="0.45", linestyle=":", linewidth=0.8)
