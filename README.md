@@ -206,3 +206,7 @@ pytest
 ## References
 
 W. Brian Arthur. *Inductive Reasoning and Bounded Rationality.* American Economic Review 84(2), 406–411, 1994.
+
+## Citing and license
+
+Citation metadata is in [`CITATION.cff`](CITATION.cff). The code is released under the [MIT License](LICENSE). The paper in `paper/` (text, figures and tables) is released under [CC BY 4.0](paper/LICENSE).
