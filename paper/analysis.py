@@ -372,24 +372,28 @@ def main():
     fig.savefig(os.path.join(FIG, "contrast.pdf"))
     plt.close(fig)
 
-    fig, axes = plt.subplots(1, 2, figsize=(7.0, 2.4))
+    fig, axes = plt.subplots(1, 3, figsize=(7.0, 2.3))
+    fig.subplots_adjust(wspace=0.38)
     start = LONG - LATE
-    for condition in CONDITIONS:
-        xs, ys = [], []
-        for seed in SEEDS:
-            with open(os.path.join(trial_dir(LONG, 100, condition, seed), "minds.json"), encoding="utf-8") as f:
-                minds = json.load(f)
-            trace = load_trace(LONG, 100, condition, seed, ["epoch", "agent_id", "lied"])
-            trace = trace[trace["epoch"] >= start]
-            rates = as_bool(trace["lied"]).groupby(trace["agent_id"]).mean()
-            for agent_id, rate in rates.items():
-                xs.append(minds[str(agent_id)]["traits"]["honesty"])
-                ys.append(rate)
-        axes[0].scatter(xs, ys, s=3, alpha=0.35, color=COLOR[condition], linewidths=0, label=LABEL[condition])
-    axes[0].set_xlabel("Honesty trait")
-    axes[0].set_ylabel(f"Lie rate, last {LATE} nights")
-    axes[0].set_title("$N = 100$: temperament drives lying", fontsize=9)
-    axes[0].legend(loc="upper right", markerscale=3)
+    windows = ((0, SHORT - 1, f"nights 1–{SHORT}"), (start, LONG - 1, f"nights {start + 1}–{LONG}"))
+    for ax, (lo_epoch, hi_epoch, title) in zip(axes[:2], windows):
+        for condition in CONDITIONS:
+            xs, ys = [], []
+            for seed in SEEDS:
+                with open(os.path.join(trial_dir(LONG, 100, condition, seed), "minds.json"), encoding="utf-8") as f:
+                    minds = json.load(f)
+                trace = load_trace(LONG, 100, condition, seed, ["epoch", "agent_id", "lied"])
+                trace = trace[(trace["epoch"] >= lo_epoch) & (trace["epoch"] <= hi_epoch)]
+                rates = as_bool(trace["lied"]).groupby(trace["agent_id"]).mean()
+                for agent_id, rate in rates.items():
+                    xs.append(minds[str(agent_id)]["traits"]["honesty"])
+                    ys.append(rate)
+            ax.scatter(xs, ys, s=3, alpha=0.35, color=COLOR[condition], linewidths=0, label=LABEL[condition])
+        ax.set_xlabel("Honesty trait")
+        ax.set_ylim(0.0, 1.0)
+        ax.set_title(f"Lie rate, {title}", fontsize=8.5)
+    axes[0].set_ylabel("Agent lie rate")
+    axes[0].legend(loc="upper right", markerscale=3, fontsize=7)
     for condition in CONDITIONS:
         xs, ys = [], []
         for seed in SEEDS:
@@ -397,11 +401,11 @@ def main():
             e = e[e["epoch"] >= start]
             xs.extend(e["town_broadcast_ratio"].tolist())
             ys.extend((e["actual_attendance"] / 100).tolist())
-        axes[1].scatter(xs, ys, s=3, alpha=0.3, color=COLOR[condition], linewidths=0, label=LABEL[condition])
-    axes[1].plot([0.2, 0.8], [0.2, 0.8], color="0.4", linewidth=0.6, linestyle="--")
-    axes[1].set_xlabel("Share of agents claiming “going”")
-    axes[1].set_ylabel("Attendance share")
-    axes[1].set_title("$N = 100$: claims do not predict the crowd", fontsize=9)
+        axes[2].scatter(xs, ys, s=3, alpha=0.3, color=COLOR[condition], linewidths=0, label=LABEL[condition])
+    axes[2].plot([0.2, 0.8], [0.2, 0.8], color="0.4", linewidth=0.6, linestyle="--")
+    axes[2].set_xlabel("Share claiming “going”")
+    axes[2].set_ylabel("Attendance share")
+    axes[2].set_title(f"Claims vs crowd, nights {start + 1}–{LONG}", fontsize=8.5)
     fig.savefig(os.path.join(FIG, "minds.pdf"))
     plt.close(fig)
 
