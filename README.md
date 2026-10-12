@@ -7,7 +7,7 @@ Each patron is an isolated PyTorch brain: a speaker network that announces "goin
 Every seed runs two towns side by side:
 
 - **control**: nobody can hear anybody.
-- **broadcast**: patrons read and write a public feed, so honesty, trust and deception start to matter.
+- **broadcast**: patrons read and write a public feed, so honesty and deception could start to matter. In the paper they do not: the learned claims carry no information.
 
 **Live reference:** https://el-farol-rho.vercel.app
 
@@ -45,7 +45,7 @@ The networks are trained with smooth-L1 TD loss plus an MSE forecast loss, softm
 - attendance against the comfort line, plus the pure (A\* = 60) and mixed (p\*) Nash benchmarks
 - deception index, strategy shares and their drift (KL, entropy)
 - ε-Nash regret and the Gini coefficient of accumulated utility
-- trust and reputation gaps between honest patrons and liars
+- reputation gaps between honest patrons and liars (broadcast towns only; trust is fixed at 0.5 in silent towns by construction, so it is not compared)
 - paired control-versus-broadcast contrasts per seed, with bootstrap CIs and exact or Monte-Carlo permutation p-values
 
 ## Repository layout
