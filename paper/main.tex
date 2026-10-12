@@ -211,7 +211,7 @@ Claims are binary and the only published statistic is their mean, so agents cann
 
 \section{Reproducibility and the interactive reference}\label{sec:repro}
 
-Every number, table and figure in this paper is generated from the raw output of the runs by \texttt{paper/analysis.py}. Each sweep runs with \texttt{experiment.py} and is analysed with \texttt{analyzer.py}. The reference engine is written in PyTorch and runs on CPU or GPU.
+Every number, table and figure in the results is generated from the raw output of the runs by \texttt{paper/analysis.py}. The sweep is run by \texttt{paper/run\_sweep.sh}, which calls \texttt{experiment.py} for every town and then \texttt{analyzer.py} for the full-run and late-window statistics of each population size. The reference engine is written in PyTorch and runs on CPU or GPU.
 
 We also ported the learning engine to TypeScript so that it runs entirely in a web browser, on a laptop or a phone, alongside an interactive three-dimensional view of the town. The port keeps the network architecture, initialisation, policy, replay, losses, target networks, gradient clipping and optimiser of the reference. The browser runs the original \texttt{analyzer.py} through Pyodide \citep{pyodide}. On 8 paired seeds (100 agents, 50 nights) the port and the PyTorch engine agree on mean attendance, deception, utility, rerouting and final TD loss, with all $|t| < 1.4$. Their random streams differ, so individual seeds are not bit-identical. Code and the live reference are available at \url{https://github.com/FABASTIC/ElFarolProblem} and \url{https://el-farol-rho.vercel.app}.
 
