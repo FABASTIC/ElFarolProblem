@@ -39,8 +39,8 @@ We ask a simple empirical question: when every patron is an independent learning
 \paragraph{Contributions.}
 \begin{itemize}
   \item A two-phase El Farol game with pre-play cheap talk, played by populations of fully isolated deep Q-learners. Each agent has separate speaker and actor networks, its own replay memory, its own optimiser and a sampled temperament (Section~\ref{sec:model}).
-  \item A paired-seed experiment across three population sizes, analysed against exact equilibrium benchmarks with hierarchical bootstrap intervals, exact sign-flip tests and false-discovery-rate control (Section~\ref{sec:design}).
-  \item A null result with a mechanism. The channel does not change collective outcomes, because the learned claims are independent of the learned actions. That independence alone explains the measured deception rate and its composition (Section~\ref{sec:results}).
+  \item A paired-seed experiment across three population sizes and \rnightsLong{} nights of learning, analysed in an early and a late window against exact equilibrium benchmarks, with hierarchical bootstrap intervals, exact sign-flip tests and false-discovery-rate control (Section~\ref{sec:design}).
+  \item A null result with a mechanism that holds at both horizons. The channel does not change collective outcomes, because the learned claims are independent of the learned actions. That independence alone explains the measured deception rate and its composition, and the early link between an agent's honesty prior and its lying disappears with training (Section~\ref{sec:results}).
   \item An open reference implementation, including an in-browser port of the learning engine that we validated against PyTorch, so that anyone can rerun the experiment on any device (Section~\ref{sec:repro}).
 \end{itemize}
 
