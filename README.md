@@ -45,6 +45,8 @@ python paper/analysis.py > /dev/null
 python paper/check_macros.py
 ```
 
+Building the PDF needs a TeX distribution that provides `latexmk` and `pdflatex`, such as TeX Live, MiKTeX or TinyTeX.
+
 ```bash
 cd paper && latexmk -pdf main.tex
 ```
