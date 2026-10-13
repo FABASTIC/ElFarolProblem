@@ -1,6 +1,6 @@
 # Cheap Talk at El Farol
 
-Source for the paper *Cheap Talk at El Farol: Independent Deep Q-Learners Learn to Babble, Not to Deceive*.
+Source for the paper *Cheap Talk at El Farol: Independent Deep Q-Learners Do Not Develop Informative Talk*.
 
 ## What generates what
 

@@ -11,7 +11,7 @@ Every seed runs two towns side by side:
 
 **Live reference:** https://el-farol-rho.vercel.app
 
-**Paper:** *Cheap Talk at El Farol: Independent Deep Q-Learners Learn to Babble, Not to Deceive*, in [`paper/`](paper/).
+**Paper:** *Cheap Talk at El Farol: Independent Deep Q-Learners Do Not Develop Informative Talk*, in [`paper/`](paper/).
 
 ## Reproduce the paper from scratch
 
