@@ -219,7 +219,7 @@ def claims_view(horizon, start):
 def main():
     os.makedirs(FIG, exist_ok=True)
     rng = np.random.default_rng(20261011)
-    macros = {"nightsShort": str(SHORT), "nightsLong": str(LONG), "nightsLate": str(LATE), "lateStart": str(LONG - LATE + 1), "smooth": str(SMOOTH), "corrWindow": str(CORR_WINDOW)}
+    macros = {"nightsShort": str(SHORT), "nightsLong": str(LONG), "nightsLate": str(LATE), "lateStart": str(LONG - LATE + 1), "smooth": str(SMOOTH), "corrWindow": str(CORR_WINDOW), "minP": f"{sign_flip_p(np.ones(len(SEEDS))):.2g}"}
     reports = {view: {n: load_report(folder, n, name) for n in SIZES} for view, (folder, name) in VIEWS.items()}
     contrasts = {view: contrast_view(view, reports[view], macros) for view in VIEWS}
     for n in SIZES:
