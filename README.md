@@ -108,19 +108,12 @@ The live site opens on a replay of a PyTorch sweep. Press **New simulation** to 
 
 - **The brains:** `dashboard/src/engine/` is a TypeScript port of the PyTorch brains. It keeps the same layers, initialisation, softmax/ε policy, replay memory, smooth-L1 and MSE losses, target networks, gradient clipping and Adam. It runs in a Web Worker and writes the same files `experiment.py` writes.
 - **The statistics:** they come from the real `analyzer.py`, run in the browser by [Pyodide](https://pyodide.org) with numpy and pandas.
-- **Reproducibility:** the random number streams differ from PyTorch, so a given seed won't reproduce bit-for-bit. Across seeds the two engines produce the same behaviour statistically.
+- **Reproducibility:** the random number streams differ from PyTorch, so a given seed won't reproduce bit-for-bit.
 - **Privacy:** nothing is uploaded, and results last until the tab is closed.
 
 Add `?engine=browser` to a local `npm run dev` URL to use the browser engine there as well.
 
-The port was validated against PyTorch (CPU) on 8 seeds × 2 conditions, with 100 agents and 50 nights. No metric differs significantly (all |Welch t| < 1.4):
-
-| Broadcast towns | PyTorch | Browser |
-| --- | --- | --- |
-| Mean attendance | 56.2 ± 0.9 | 56.0 ± 0.9 |
-| Deception index | 0.488 ± 0.013 | 0.489 ± 0.015 |
-| Mean utility | 0.263 ± 0.029 | 0.284 ± 0.031 |
-| Final TD loss | 0.223 ± 0.035 | 0.218 ± 0.033 |
+The browser port is provided for exploration only. It has not been statistically validated against the PyTorch engine, and none of the paper's results come from it.
 
 ## Run it on any machine with PyTorch
 
