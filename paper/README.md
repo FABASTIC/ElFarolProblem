@@ -1,6 +1,6 @@
 # Cheap Talk at El Farol
 
-Source for the paper *Cheap Talk at El Farol: Independent Deep Q-Learners Do Not Develop Informative Talk*.
+Source for the paper *Cheap Talk at El Farol: A Free Pre-Play Channel Leaves Independent Deep Q-Learners Unchanged*.
 
 ## What generates what
 

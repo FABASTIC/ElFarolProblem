@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use this software or the paper, please cite it as below."
-title: "Cheap Talk at El Farol: Independent Deep Q-Learners Do Not Develop Informative Talk"
+title: "Cheap Talk at El Farol: A Free Pre-Play Channel Leaves Independent Deep Q-Learners Unchanged"
 authors:
   - family-names: Malhotra
     given-names: Vairaj
@@ -18,7 +18,7 @@ keywords:
   - minority game
 preferred-citation:
   type: article
-  title: "Cheap Talk at El Farol: Independent Deep Q-Learners Do Not Develop Informative Talk"
+  title: "Cheap Talk at El Farol: A Free Pre-Play Channel Leaves Independent Deep Q-Learners Unchanged"
   authors:
     - family-names: Malhotra
       given-names: Vairaj
