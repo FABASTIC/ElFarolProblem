@@ -179,10 +179,11 @@ def contrast_view(view, reports, macros):
             macros[f"util{tag}{view}{n}"] = f"{block['behavior']['utility_mean']['mean']:.3f}"
             macros[f"gap{tag}{view}{n}"] = f"{block['nash']['mean_abs_gap']['mean']:.2f}"
             minds = reports[n]["conditions"][condition].get("minds") or {}
-            for key, short, digits in (("honesty_lie_spearman", "rho", 2), ("reputation_gap_honest_minus_liars", "repgap", 3)):
-                stat = minds.get(key) or {}
-                value = stat.get("mean") if isinstance(stat, dict) else None
-                macros[f"{short}{tag}{view}{n}"] = (f"{value:+.{digits}f}" if short == "rho" else f"{value:.{digits}f}") if value is not None else "--"
+            rho = (minds.get("honesty_lie_spearman") or {}).get("mean")
+            macros[f"rho{tag}{view}{n}"] = f"{rho:+.2f}" if rho is not None else "--"
+            if view != "Late":
+                gap = (minds.get("reputation_gap_honest_minus_liars") or {}).get("mean")
+                macros[f"repgapFinal{tag}{view}{n}"] = f"{gap:.3f}" if gap is not None else "--"
     rhos = [reports[n]["conditions"][c]["minds"]["honesty_lie_spearman"]["mean"] for n in SIZES for c in CONDITIONS]
     macros[f"rhoLo{view}"] = f"{min(rhos):+.2f}"
     macros[f"rhoHi{view}"] = f"{max(rhos):+.2f}"
