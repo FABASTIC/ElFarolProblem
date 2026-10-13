@@ -51,7 +51,7 @@ Building the PDF needs a TeX distribution that provides `latexmk` and `pdflatex`
 cd paper && latexmk -pdf main.tex
 ```
 
-Measured on a 16-core machine (WSL, 7.7 GB RAM): the 100-night sweep takes about 11 minutes with 6 jobs, the 1000-night sweep about 2 hours with 4 jobs, and `analysis.py` about 10 minutes. The outputs take 0.4 GB and 2.9 GB under `outputs/paper/`. Use fewer jobs if you have less memory. Every seed fixes all random draws, so a rerun reproduces the logged data exactly, and the first 100 nights of each 1000-night town are identical to the 100-night run.
+Measured on a 16-core machine (WSL, 7.7 GB RAM): the 100-night sweep takes about 11 minutes with 6 jobs and the 1000-night sweep about 2 hours with 4 jobs. `analysis.py` took 35 seconds in the last measured run, on the same machine under Windows 11 (Intel Core i7-13620H, 16 logical cores, 15.6 GB RAM, Python 3.14). The outputs take 0.4 GB and 2.9 GB under `outputs/paper/`. Use fewer jobs if you have less memory. Every seed fixes all random draws, so a rerun reproduces the logged data exactly, and the first 100 nights of each 1000-night town are identical to the 100-night run.
 
 ## How a night works
 
